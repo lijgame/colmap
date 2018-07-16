@@ -48,6 +48,7 @@ include(CheckCXXCompilerFlag)
 # Include helper macros and commands, and allow the included file to override
 # the CMake policies in this file
 include(${CMAKE_SOURCE_DIR}/cmake/CMakeHelper.cmake NO_POLICY_SCOPE)
+include(${CMAKE_SOURCE_DIR}/LocalConfig.cmake)
 
 
 ################################################################################
@@ -61,10 +62,8 @@ option(CUDA_ENABLED "Whether to enable CUDA, if available" ON)
 option(OPENGL_ENABLED "Whether to enable OpenGL, if available" ON)
 option(TESTS_ENABLED "Whether to build test binaries" OFF)
 option(PROFILING_ENABLED "Whether to enable google-perftools linker flags" OFF)
-option(CGAL_ENABLED "Whether to enable the CGAL library" ON)
-option(BOOST_STATIC "Whether to enable static boost library linker flags" ON)
-set(CUDA_ARCHS "Auto" CACHE STRING "List of CUDA architectures for which to \
-generate code, e.g., Auto, All, Maxwell, Pascal, ...")
+option(BOOST_STATIC "Whether to enable static boost library linker flags" OFF)
+option(CUDA_MULTI_ARCH "Whether to generate CUDA code for multiple architectures" OFF)
 
 if(TESTS_ENABLED)
     enable_testing()
@@ -89,7 +88,6 @@ find_package(Ceres REQUIRED)
 find_package(Boost REQUIRED COMPONENTS
              program_options
              filesystem
-             graph
              regex
              system
              unit_test_framework)
@@ -103,8 +101,6 @@ find_package(Glog REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(Glew REQUIRED)
 find_package(Git)
-
-find_package(CGAL QUIET)
 
 set(CUDA_MIN_VERSION "7.0")
 if(CUDA_ENABLED)
@@ -120,12 +116,6 @@ if(Qt5_FOUND)
     message(STATUS "  Module : ${Qt5Widgets_DIR}")
 endif()
 
-if(CGAL_FOUND)
-    message(STATUS "Found CGAL")
-    message(STATUS "  Includes : ${CGAL_INCLUDE_DIRS}")
-    message(STATUS "  Libraries : ${CGAL_LIBRARY}")
-endif()
-
 
 ################################################################################
 # Compiler specific configuration
@@ -136,7 +126,7 @@ if(CMAKE_BUILD_TYPE)
 else()
     message(STATUS "Build type not specified, using Release")
     set(CMAKE_BUILD_TYPE Release)
-    set(IS_DEBUG OFF)
+    set(IS_DEBUG FALSE)
 endif()
 
 if(IS_MSVC)
@@ -183,7 +173,11 @@ if(CUDA_FOUND)
 
         include(${CMAKE_SOURCE_DIR}/cmake/SelectCudaComputeArch.cmake)
 
-        CUDA_SELECT_NVCC_ARCH_FLAGS(CUDA_ARCH_FLAGS ${CUDA_ARCHS})
+        if(CUDA_MULTI_ARCH)
+            CUDA_SELECT_NVCC_ARCH_FLAGS(CUDA_ARCH_FLAGS All)
+        else()
+            CUDA_SELECT_NVCC_ARCH_FLAGS(CUDA_ARCH_FLAGS Auto)
+        endif()
 
         set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -Wno-deprecated-gpu-targets")
         set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} ${CUDA_ARCH_FLAGS}")
@@ -191,11 +185,11 @@ if(CUDA_FOUND)
         message(STATUS "Enabling CUDA support (version: ${CUDA_VERSION_STRING},"
                        " archs: ${CUDA_ARCH_FLAGS_readable})")
     else()
-        set(CUDA_FOUND OFF)
+        set(CUDA_FOUND FALSE)
         message(STATUS "Disabling CUDA support")
     endif()
 else()
-    set(CUDA_ENABLED OFF)
+    set(CUDA_ENABLED FALSE)
     if(CUDA_VERSION_STRING)
         message(STATUS "Disabling CUDA support (found version "
                 "${CUDA_VERSION_STRING} but >= ${CUDA_MIN_VERSION} required)")
@@ -217,13 +211,6 @@ if(PROFILING_ENABLED)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lprofiler -ltcmalloc")
 else()
     message(STATUS "Disabling profiling support")
-endif()
-
-if(CGAL_FOUND AND CGAL_ENABLED)
-    message(STATUS "Enabling CGAL support")
-    add_definitions("-DCGAL_ENABLED")
-else()
-    message(STATUS "Disabling CGAL support")
 endif()
 
 # Qt5 was built with -reduce-relocations.
@@ -276,12 +263,6 @@ set(COLMAP_EXTERNAL_LIBRARIES
     ${Qt5OpenGL_LIBRARIES}
     ${Qt5Widgets_LIBRARIES}
 )
-
-if(CGAL_FOUND AND CGAL_ENABLED)
-    list(APPEND COLMAP_INCLUDE_DIRS ${CGAL_INCLUDE_DIRS} ${GMP_INCLUDE_DIR})
-    list(APPEND COLMAP_EXTERNAL_LIBRARIES ${CGAL_LIBRARY} ${GMP_LIBRARIES})
-    list(APPEND COLMAP_LINK_DIRS ${CGAL_LIBRARIES_DIR})
-endif()
 
 if(UNIX)
     list(APPEND COLMAP_EXTERNAL_LIBRARIES pthread)

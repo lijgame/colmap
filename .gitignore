@@ -11,7 +11,7 @@ install-debug/
 install-release/
 data/
 doc/_build
-
+x64-windows/
 # Compiled Object files
 *.slo
 *.lo
