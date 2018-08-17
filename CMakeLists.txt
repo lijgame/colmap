@@ -48,7 +48,7 @@ include(CheckCXXCompilerFlag)
 # Include helper macros and commands, and allow the included file to override
 # the CMake policies in this file
 include(${CMAKE_SOURCE_DIR}/cmake/CMakeHelper.cmake NO_POLICY_SCOPE)
-include(${CMAKE_SOURCE_DIR}/LocalConfig.cmake)
+# include(${CMAKE_SOURCE_DIR}/LocalConfig.cmake)
 
 
 ################################################################################

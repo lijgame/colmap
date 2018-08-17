@@ -1,0 +1,9 @@
+{
+    "cmake.configureSettings": {
+        "CMAKE_TOOLCHAIN_FILE":"C:/codes/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "Ceres_DIR":"D:/codes/vcpkg/installed/x64-windows/share/ceres",
+
+
+    },
+    "C_Cpp.default.configurationProvider": "vector-of-bool.cmake-tools"
+}
