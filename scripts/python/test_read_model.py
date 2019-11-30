@@ -27,7 +27,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 #
-# Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+# Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 import numpy as np
 from read_model import read_model
@@ -63,11 +63,11 @@ def compare_points(points3D1, points3D2):
         point3D1 = points3D1[point3D_id1]
         point3D2 = points3D2[point3D_id1]
         assert point3D1.id == point3D2.id
-        assert np.allclose(point3D1.xyz, point3D1.xyz)
-        assert np.array_equal(point3D1.rgb, point3D1.rgb)
+        assert np.allclose(point3D1.xyz, point3D2.xyz)
+        assert np.array_equal(point3D1.rgb, point3D2.rgb)
         assert np.allclose(point3D1.error, point3D2.error)
-        assert np.array_equal(point3D1.image_ids, point3D1.image_ids)
-        assert np.array_equal(point3D1.point2D_idxs, point3D1.point2D_idxs)
+        assert np.array_equal(point3D1.image_ids, point3D2.image_ids)
+        assert np.array_equal(point3D1.point2D_idxs, point3D2.point2D_idxs)
 
 
 def main():

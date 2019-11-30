@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "util/option_manager.h"
 
@@ -45,13 +45,14 @@
 #include "optim/bundle_adjustment.h"
 #include "ui/render_options.h"
 #include "util/misc.h"
+#include "util/random.h"
 #include "util/version.h"
 
 namespace config = boost::program_options;
 
 namespace colmap {
 
-OptionManager::OptionManager() {
+OptionManager::OptionManager(bool add_project_options) {
   project_path.reset(new std::string());
   database_path.reset(new std::string());
   image_path.reset(new std::string());
@@ -75,10 +76,17 @@ OptionManager::OptionManager() {
   Reset();
 
   desc_->add_options()("help,h", "");
-  desc_->add_options()("project_path", config::value<std::string>());
+
+  AddAndRegisterDefaultOption("random_seed", &kDefaultPRNGSeed);
+
+  if (add_project_options) {
+    desc_->add_options()("project_path", config::value<std::string>());
+  }
 }
 
 void OptionManager::ModifyForIndividualData() {
+  mapper->min_focal_length_ratio = 0.1;
+  mapper->max_focal_length_ratio = 10;
   mapper->max_extra_param = std::numeric_limits<double>::max();
 }
 
@@ -88,6 +96,8 @@ void OptionManager::ModifyForVideoData() {
   mapper->mapper.init_min_tri_angle /= 2;
   mapper->ba_global_images_ratio = 1.4;
   mapper->ba_global_points_ratio = 1.4;
+  mapper->min_focal_length_ratio = 0.1;
+  mapper->max_focal_length_ratio = 10;
   mapper->max_extra_param = std::numeric_limits<double>::max();
   stereo_fusion->min_num_pixels = 15;
 }
@@ -135,13 +145,24 @@ void OptionManager::ModifyForMediumQuality() {
 }
 
 void OptionManager::ModifyForHighQuality() {
+  sift_extraction->estimate_affine_shape = true;
   sift_extraction->max_image_size = 2400;
+  sift_matching->guided_matching = true;
+  mapper->ba_local_max_num_iterations = 30;
+  mapper->ba_local_max_refinements = 3;
+  mapper->ba_global_max_num_iterations = 75;
   patch_match_stereo->max_image_size = 2400;
   stereo_fusion->max_image_size = 2400;
 }
 
 void OptionManager::ModifyForExtremeQuality() {
-  // Extreme quality is the default.
+  // Most of the options are set to extreme quality by default.
+  sift_extraction->estimate_affine_shape = true;
+  sift_extraction->domain_size_pooling = true;
+  sift_matching->guided_matching = true;
+  mapper->ba_local_max_num_iterations = 40;
+  mapper->ba_local_max_refinements = 3;
+  mapper->ba_global_max_num_iterations = 100;
 }
 
 void OptionManager::AddAllOptions() {
@@ -198,6 +219,8 @@ void OptionManager::AddExtractionOptions() {
   }
   added_extraction_options_ = true;
 
+  AddAndRegisterDefaultOption("ImageReader.mask_path",
+                              &image_reader->mask_path);
   AddAndRegisterDefaultOption("ImageReader.camera_model",
                               &image_reader->camera_model);
   AddAndRegisterDefaultOption("ImageReader.single_camera",
@@ -210,6 +233,8 @@ void OptionManager::AddExtractionOptions() {
                               &image_reader->camera_params);
   AddAndRegisterDefaultOption("ImageReader.default_focal_length_factor",
                               &image_reader->default_focal_length_factor);
+  AddAndRegisterDefaultOption("ImageReader.camera_mask_path",
+                              &image_reader->camera_mask_path);
 
   AddAndRegisterDefaultOption("SiftExtraction.num_threads",
                               &sift_extraction->num_threads);
@@ -411,6 +436,8 @@ void OptionManager::AddBundleAdjustmentOptions() {
                               &bundle_adjustment->refine_principal_point);
   AddAndRegisterDefaultOption("BundleAdjustment.refine_extra_params",
                               &bundle_adjustment->refine_extra_params);
+  AddAndRegisterDefaultOption("BundleAdjustment.refine_extrinsics",
+                              &bundle_adjustment->refine_extrinsics);
 }
 
 void OptionManager::AddMapperOptions() {
@@ -447,6 +474,9 @@ void OptionManager::AddMapperOptions() {
                               &mapper->ba_refine_principal_point);
   AddAndRegisterDefaultOption("Mapper.ba_refine_extra_params",
                               &mapper->ba_refine_extra_params);
+  AddAndRegisterDefaultOption(
+      "Mapper.ba_min_num_residuals_for_multi_threading",
+      &mapper->ba_min_num_residuals_for_multi_threading);
   AddAndRegisterDefaultOption("Mapper.ba_local_num_images",
                               &mapper->ba_local_num_images);
   AddAndRegisterDefaultOption("Mapper.ba_local_max_num_iterations",
@@ -476,6 +506,8 @@ void OptionManager::AddMapperOptions() {
   AddAndRegisterDefaultOption("Mapper.snapshot_path", &mapper->snapshot_path);
   AddAndRegisterDefaultOption("Mapper.snapshot_images_freq",
                               &mapper->snapshot_images_freq);
+  AddAndRegisterDefaultOption("Mapper.fix_existing_images",
+                              &mapper->fix_existing_images);
 
   // IncrementalMapper.
   AddAndRegisterDefaultOption("Mapper.init_min_num_inliers",

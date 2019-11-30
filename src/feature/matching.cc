@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "feature/matching.h"
 
@@ -557,6 +557,8 @@ TwoViewGeometryVerifier::TwoViewGeometryVerifier(
       static_cast<size_t>(options_.min_num_inliers);
   two_view_geometry_options_.ransac_options.max_error = options_.max_error;
   two_view_geometry_options_.ransac_options.confidence = options_.confidence;
+  two_view_geometry_options_.ransac_options.min_num_trials =
+      static_cast<size_t>(options_.min_num_trials);
   two_view_geometry_options_.ransac_options.max_num_trials =
       static_cast<size_t>(options_.max_num_trials);
   two_view_geometry_options_.ransac_options.min_inlier_ratio =
@@ -751,8 +753,6 @@ void SiftFeatureMatcher::Match(
     return;
   }
 
-  DatabaseTransaction database_transaction(database_);
-
   //////////////////////////////////////////////////////////////////////////////
   // Match the image pairs
   //////////////////////////////////////////////////////////////////////////////
@@ -901,6 +901,7 @@ void ExhaustiveFeatureMatcher::Run() {
         }
       }
 
+      DatabaseTransaction database_transaction(&database_);
       matcher_.Match(image_pairs);
 
       PrintElapsedTime(timer);
@@ -1002,6 +1003,7 @@ void SequentialFeatureMatcher::RunSequentialMatching(
       }
     }
 
+    DatabaseTransaction database_transaction(&database_);
     matcher_.Match(image_pairs);
 
     PrintElapsedTime(timer);
@@ -1293,6 +1295,7 @@ void SpatialFeatureMatcher::Run() {
       image_pairs.emplace_back(image_id, nn_image_id);
     }
 
+    DatabaseTransaction database_transaction(&database_);
     matcher_.Match(image_pairs);
 
     PrintElapsedTime(timer);
@@ -1343,7 +1346,7 @@ void TransitiveFeatureMatcher::Run() {
     std::vector<std::pair<image_t, image_t>> existing_image_pairs;
     std::vector<int> existing_num_inliers;
     database_.ReadTwoViewGeometryNumInliers(&existing_image_pairs,
-                                       &existing_num_inliers);
+                                            &existing_num_inliers);
 
     CHECK_EQ(existing_image_pairs.size(), existing_num_inliers.size());
 
@@ -1372,6 +1375,7 @@ void TransitiveFeatureMatcher::Run() {
                 num_batches += 1;
                 std::cout << StringPrintf("  Batch %d", num_batches)
                           << std::flush;
+                DatabaseTransaction database_transaction(&database_);
                 matcher_.Match(image_pairs);
                 image_pairs.clear();
                 PrintElapsedTime(timer);
@@ -1390,6 +1394,7 @@ void TransitiveFeatureMatcher::Run() {
 
     num_batches += 1;
     std::cout << StringPrintf("  Batch %d", num_batches) << std::flush;
+    DatabaseTransaction database_transaction(&database_);
     matcher_.Match(image_pairs);
     PrintElapsedTime(timer);
   }
@@ -1496,6 +1501,7 @@ void ImagePairsFeatureMatcher::Run() {
       block_image_pairs.push_back(image_pairs[j]);
     }
 
+    DatabaseTransaction database_transaction(&database_);
     matcher_.Match(block_image_pairs);
 
     PrintElapsedTime(timer);
@@ -1621,6 +1627,8 @@ void FeaturePairsFeatureMatcher::Run() {
           match_options_.max_error;
       two_view_geometry_options.ransac_options.confidence =
           match_options_.confidence;
+      two_view_geometry_options.ransac_options.min_num_trials =
+          static_cast<size_t>(match_options_.min_num_trials);
       two_view_geometry_options.ransac_options.max_num_trials =
           static_cast<size_t>(match_options_.max_num_trials);
       two_view_geometry_options.ransac_options.min_inlier_ratio =

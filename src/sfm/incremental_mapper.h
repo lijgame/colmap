@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #ifndef COLMAP_SRC_SFM_INCREMENTAL_MAPPER_H_
 #define COLMAP_SRC_SFM_INCREMENTAL_MAPPER_H_
@@ -98,6 +98,9 @@ class IncrementalMapper {
     // Number of images to optimize in local bundle adjustment.
     int local_ba_num_images = 6;
 
+    // Minimum triangulation for images to be chosen in local bundle adjustment.
+    double local_ba_min_tri_angle = 6;
+
     // Thresholds for bogus camera parameters. Images with bogus camera
     // parameters are filtered and ignored in triangulation.
     double min_focal_length_ratio = 0.1;  // Opening angle of ~130deg
@@ -112,6 +115,9 @@ class IncrementalMapper {
 
     // Maximum number of trials to register an image.
     int max_reg_trials = 3;
+
+    // If reconstruction is provided as input, fix the existing image poses.
+    bool fix_existing_images = false;
 
     // Number of threads.
     int num_threads = -1;
@@ -201,7 +207,8 @@ class IncrementalMapper {
       const image_t image_id, const std::unordered_set<point3D_t>& point3D_ids);
 
   // Global bundle adjustment using Ceres Solver or PBA.
-  bool AdjustGlobalBundle(const BundleAdjustmentOptions& ba_options);
+  bool AdjustGlobalBundle(const Options& options,
+                          const BundleAdjustmentOptions& ba_options);
   bool AdjustParallelGlobalBundle(
       const BundleAdjustmentOptions& ba_options,
       const ParallelBundleAdjuster::Options& parallel_ba_options);
@@ -293,6 +300,11 @@ class IncrementalMapper {
   // Number of trials to register image in current reconstruction. Used to set
   // an upper bound to the number of trials to register an image.
   std::unordered_map<image_t, size_t> num_reg_trials_;
+
+  // Images that were registered before beginning the reconstruction.
+  // This image list will be non-empty, if the reconstruction is continued from
+  // an existing reconstruction.
+  std::unordered_set<image_t> existing_image_ids_;
 };
 
 }  // namespace colmap

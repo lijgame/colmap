@@ -27,7 +27,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 #
-# Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+# Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 if(IS_MSVC)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3")
@@ -50,7 +50,7 @@ add_subdirectory(tools)
 add_subdirectory(ui)
 add_subdirectory(util)
 
-COLMAP_ADD_LIBRARY(colmap ${COLMAP_SOURCES})
+COLMAP_ADD_STATIC_LIBRARY(colmap ${COLMAP_SOURCES})
 
 if(CUDA_ENABLED)
     set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} --use_fast_math")
@@ -67,5 +67,12 @@ if(CUDA_ENABLED)
         add_definitions("-DWIN32_LEAN_AND_MEAN")
     endif()
 
-    COLMAP_ADD_CUDA_LIBRARY(colmap_cuda ${COLMAP_CUDA_SOURCES})
+    COLMAP_ADD_STATIC_CUDA_LIBRARY(colmap_cuda ${COLMAP_CUDA_SOURCES})
+    target_link_libraries(colmap_cuda colmap)
+
+    target_link_libraries(colmap
+        colmap_cuda ${COLMAP_INTERNAL_LIBRARIES} ${COLMAP_EXTERNAL_LIBRARIES})
+else()
+    target_link_libraries(colmap
+        ${COLMAP_INTERNAL_LIBRARIES} ${COLMAP_EXTERNAL_LIBRARIES})
 endif()

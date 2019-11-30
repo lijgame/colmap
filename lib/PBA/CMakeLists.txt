@@ -9,10 +9,7 @@ if(NOT SIMD_ENABLED)
 endif()
 
 if(CUDA_ENABLED)
-    # Fix for Ubuntu 16.04.
-    add_definitions("-D_FORCE_INLINES")
-
-    COLMAP_ADD_CUDA_LIBRARY(pba
+    COLMAP_ADD_STATIC_CUDA_LIBRARY(pba
         ConfigBA.cpp
         ConfigBA.h
         CuTexImage.cpp
@@ -31,7 +28,7 @@ if(CUDA_ENABLED)
 else()
     add_definitions("-DPBA_NO_GPU")
 
-    COLMAP_ADD_LIBRARY(pba
+    COLMAP_ADD_STATIC_LIBRARY(pba
         ConfigBA.cpp
         ConfigBA.h
         DataInterface.h

@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "base/reconstruction.h"
 
@@ -94,7 +94,9 @@ void Reconstruction::Load(const DatabaseCache& database_cache) {
   // Add image pairs.
   for (const auto& image_pair :
        database_cache.CorrespondenceGraph().NumCorrespondencesBetweenImages()) {
-    image_pairs_[image_pair.first] = std::make_pair(0, image_pair.second);
+    ImagePairStat image_pair_stat;
+    image_pair_stat.num_total_corrs = image_pair.second;
+    image_pair_stats_.emplace(image_pair.first, image_pair_stat);
   }
 }
 
@@ -277,6 +279,23 @@ void Reconstruction::DeleteObservation(const image_t image_id,
   image.ResetPoint3DForPoint2D(point2D_idx);
 }
 
+void Reconstruction::DeleteAllPoints2DAndPoints3D() {
+  points3D_.clear();
+  for (auto& image : images_) {
+    class Image new_image;
+    new_image.SetImageId(image.second.ImageId());
+    new_image.SetName(image.second.Name());
+    new_image.SetCameraId(image.second.CameraId());
+    new_image.SetRegistered(image.second.IsRegistered());
+    new_image.SetNumCorrespondences(image.second.NumCorrespondences());
+    new_image.SetQvec(image.second.Qvec());
+    new_image.SetQvecPrior(image.second.QvecPrior());
+    new_image.SetTvec(image.second.Tvec());
+    new_image.SetTvecPrior(image.second.TvecPrior());
+    image.second = new_image;
+  }
+}
+
 void Reconstruction::RegisterImage(const image_t image_id) {
   class Image& image = Image(image_id);
   if (!image.IsRegistered()) {
@@ -383,12 +402,13 @@ void Reconstruction::Normalize(const double extent, const double p0,
   const Eigen::Vector3d translation = mean_coord;
 
   // Transform images.
-  for (auto& elem : proj_centers) {
-    elem.second -= translation;
-    elem.second *= scale;
-    const Eigen::Quaterniond quat(elem.first->Qvec(0), elem.first->Qvec(1),
-                                  elem.first->Qvec(2), elem.first->Qvec(3));
-    elem.first->SetTvec(quat * -elem.second);
+  for (auto& image_proj_center : proj_centers) {
+    image_proj_center.second -= translation;
+    image_proj_center.second *= scale;
+    const Eigen::Quaterniond quat(
+        image_proj_center.first->Qvec(0), image_proj_center.first->Qvec(1),
+        image_proj_center.first->Qvec(2), image_proj_center.first->Qvec(3));
+    image_proj_center.first->SetTvec(quat * -image_proj_center.second);
   }
 
   // Transform points.
@@ -492,6 +512,8 @@ bool Reconstruction::Merge(const Reconstruction& reconstruction,
     }
   }
 
+  FilterPoints3DWithLargeReprojectionError(max_reproj_error, Point3DIds());
+
   return true;
 }
 
@@ -591,9 +613,9 @@ bool Reconstruction::AlignRobust(const std::vector<std::string>& image_names,
 
 const class Image* Reconstruction::FindImageWithName(
     const std::string& name) const {
-  for (const auto& elem : images_) {
-    if (elem.second.Name() == name) {
-      return &elem.second;
+  for (const auto& image : images_) {
+    if (image.second.Name() == name) {
+      return &image.second;
     }
   }
   return nullptr;
@@ -610,6 +632,39 @@ std::vector<image_t> Reconstruction::FindCommonRegImageIds(
     }
   }
   return common_reg_image_ids;
+}
+
+void Reconstruction::TranscribeImageIdsToDatabase(const Database& database) {
+  std::unordered_map<image_t, image_t> old_to_new_image_ids;
+  old_to_new_image_ids.reserve(NumImages());
+
+  EIGEN_STL_UMAP(image_t, class Image) new_images;
+  new_images.reserve(NumImages());
+
+  for (auto& image : images_) {
+    if (!database.ExistsImageWithName(image.second.Name())) {
+      LOG(FATAL) << "Image with name " << image.second.Name()
+                 << " does not exist in database";
+    }
+
+    const auto database_image = database.ReadImageWithName(image.second.Name());
+    old_to_new_image_ids.emplace(image.second.ImageId(),
+                                 database_image.ImageId());
+    image.second.SetImageId(database_image.ImageId());
+    new_images.emplace(database_image.ImageId(), image.second);
+  }
+
+  images_ = std::move(new_images);
+
+  for (auto& image_id : reg_image_ids_) {
+    image_id = old_to_new_image_ids.at(image_id);
+  }
+
+  for (auto& point3D : points3D_) {
+    for (auto& track_el : point3D.second.Track().Elements()) {
+      track_el.image_id = old_to_new_image_ids.at(track_el.image_id);
+    }
+  }
 }
 
 size_t Reconstruction::FilterPoints3D(
@@ -1275,11 +1330,10 @@ size_t Reconstruction::FilterPoints3DWithSmallTriangulationAngle(
 size_t Reconstruction::FilterPoints3DWithLargeReprojectionError(
     const double max_reproj_error,
     const std::unordered_set<point3D_t>& point3D_ids) {
+  const double max_squared_reproj_error = max_reproj_error * max_reproj_error;
+
   // Number of filtered points.
   size_t num_filtered = 0;
-
-  // Cache for projection matrices.
-  EIGEN_STL_UMAP(image_t, Eigen::Matrix3x4d) proj_matrices;
 
   for (const auto point3D_id : point3D_ids) {
     if (!ExistsPoint3D(point3D_id)) {
@@ -1290,6 +1344,7 @@ size_t Reconstruction::FilterPoints3DWithLargeReprojectionError(
 
     if (point3D.Track().Length() < 2) {
       DeletePoint3D(point3D_id);
+      num_filtered += point3D.Track().Length();
       continue;
     }
 
@@ -1299,32 +1354,18 @@ size_t Reconstruction::FilterPoints3DWithLargeReprojectionError(
 
     for (const auto& track_el : point3D.Track().Elements()) {
       const class Image& image = Image(track_el.image_id);
-
-      Eigen::Matrix3x4d proj_matrix;
-      if (proj_matrices.count(track_el.image_id) == 0) {
-        proj_matrix = image.ProjectionMatrix();
-        proj_matrices[track_el.image_id] = proj_matrix;
-      } else {
-        proj_matrix = proj_matrices[track_el.image_id];
-      }
-
-      if (HasPointPositiveDepth(proj_matrix, point3D.XYZ())) {
-        const class Camera& camera = Camera(image.CameraId());
-        const Point2D& point2D = image.Point2D(track_el.point2D_idx);
-        const double reproj_error = CalculateReprojectionError(
-            point2D.XY(), point3D.XYZ(), proj_matrix, camera);
-        if (reproj_error > max_reproj_error) {
-          track_els_to_delete.push_back(track_el);
-        } else {
-          reproj_error_sum += reproj_error;
-        }
-      } else {
+      const class Camera& camera = Camera(image.CameraId());
+      const Point2D& point2D = image.Point2D(track_el.point2D_idx);
+      const double squared_reproj_error = CalculateSquaredReprojectionError(
+          point2D.XY(), point3D.XYZ(), image.Qvec(), image.Tvec(), camera);
+      if (squared_reproj_error > max_squared_reproj_error) {
         track_els_to_delete.push_back(track_el);
+      } else {
+        reproj_error_sum += std::sqrt(squared_reproj_error);
       }
     }
 
-    if (track_els_to_delete.size() == point3D.Track().Length() ||
-        track_els_to_delete.size() == point3D.Track().Length() - 1) {
+    if (track_els_to_delete.size() >= point3D.Track().Length() - 1) {
       num_filtered += point3D.Track().Length();
       DeletePoint3D(point3D_id);
     } else {
@@ -1682,6 +1723,9 @@ void Reconstruction::WriteCamerasText(const std::string& path) const {
   std::ofstream file(path, std::ios::trunc);
   CHECK(file.is_open()) << path;
 
+  // Ensure that we don't loose any precision by storing in text.
+  file.precision(17);
+
   file << "# Camera list with one line of data per camera:" << std::endl;
   file << "#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]" << std::endl;
   file << "# Number of cameras: " << cameras_.size() << std::endl;
@@ -1708,6 +1752,9 @@ void Reconstruction::WriteCamerasText(const std::string& path) const {
 void Reconstruction::WriteImagesText(const std::string& path) const {
   std::ofstream file(path, std::ios::trunc);
   CHECK(file.is_open()) << path;
+
+  // Ensure that we don't loose any precision by storing in text.
+  file.precision(17);
 
   file << "# Image list with two lines of data per image:" << std::endl;
   file << "#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, "
@@ -1768,6 +1815,9 @@ void Reconstruction::WriteImagesText(const std::string& path) const {
 void Reconstruction::WritePoints3DText(const std::string& path) const {
   std::ofstream file(path, std::ios::trunc);
   CHECK(file.is_open()) << path;
+
+  // Ensure that we don't loose any precision by storing in text.
+  file.precision(17);
 
   file << "# 3D point list with one line of data per point:" << std::endl;
   file << "#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, "
@@ -1904,9 +1954,11 @@ void Reconstruction::SetObservationAsTriangulated(
         (is_continued_point3D || image_id < corr.image_id)) {
       const image_pair_t pair_id =
           Database::ImagePairToPairId(image_id, corr.image_id);
-      image_pairs_[pair_id].first += 1;
-      CHECK_LE(image_pairs_[pair_id].first, image_pairs_[pair_id].second)
-          << "The correspondence graph graph must not contain duplicate matches";
+      image_pair_stats_[pair_id].num_tri_corrs += 1;
+      CHECK_LE(image_pair_stats_[pair_id].num_tri_corrs,
+               image_pair_stats_[pair_id].num_total_corrs)
+          << "The correspondence graph graph must not contain duplicate "
+             "matches";
     }
   }
 }
@@ -1936,8 +1988,8 @@ void Reconstruction::ResetTriObservations(const image_t image_id,
         (!is_deleted_point3D || image_id < corr.image_id)) {
       const image_pair_t pair_id =
           Database::ImagePairToPairId(image_id, corr.image_id);
-      image_pairs_[pair_id].first -= 1;
-      CHECK_GE(image_pairs_[pair_id].first, 0)
+      image_pair_stats_[pair_id].num_tri_corrs -= 1;
+      CHECK_GE(image_pair_stats_[pair_id].num_tri_corrs, 0)
           << "The scene graph graph must not contain duplicate matches";
     }
   }

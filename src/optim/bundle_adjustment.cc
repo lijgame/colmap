@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "optim/bundle_adjustment.h"
 
@@ -56,10 +56,14 @@ ceres::LossFunction* BundleAdjustmentOptions::CreateLossFunction() const {
     case LossFunctionType::TRIVIAL:
       loss_function = new ceres::TrivialLoss();
       break;
+    case LossFunctionType::SOFT_L1:
+      loss_function = new ceres::SoftLOneLoss(loss_function_scale);
+      break;
     case LossFunctionType::CAUCHY:
       loss_function = new ceres::CauchyLoss(loss_function_scale);
       break;
   }
+  CHECK_NOTNULL(loss_function);
   return loss_function;
 }
 
@@ -279,12 +283,20 @@ bool BundleAdjuster::Solve(Reconstruction* reconstruction) {
     solver_options.preconditioner_type = ceres::SCHUR_JACOBI;
   }
 
-  solver_options.num_threads =
-      GetEffectiveNumThreads(solver_options.num_threads);
+  if (problem_->NumResiduals() <
+      options_.min_num_residuals_for_multi_threading) {
+    solver_options.num_threads = 1;
 #if CERES_VERSION_MAJOR < 2
-  solver_options.num_linear_solver_threads =
-      GetEffectiveNumThreads(solver_options.num_linear_solver_threads);
+    solver_options.num_linear_solver_threads = 1;
 #endif  // CERES_VERSION_MAJOR
+  } else {
+    solver_options.num_threads =
+        GetEffectiveNumThreads(solver_options.num_threads);
+#if CERES_VERSION_MAJOR < 2
+    solver_options.num_linear_solver_threads =
+        GetEffectiveNumThreads(solver_options.num_linear_solver_threads);
+#endif  // CERES_VERSION_MAJOR
+  }
 
   std::string solver_error;
   CHECK(solver_options.IsValid(&solver_error)) << solver_error;
@@ -344,7 +356,8 @@ void BundleAdjuster::AddImageToProblem(const image_t image_id,
   double* tvec_data = image.Tvec().data();
   double* camera_params_data = camera.ParamsData();
 
-  const bool constant_pose = config_.HasConstantPose(image_id);
+  const bool constant_pose =
+      !options_.refine_extrinsics || config_.HasConstantPose(image_id);
 
   // Add residuals to bundle adjustment problem.
   size_t num_observations = 0;
@@ -557,9 +570,16 @@ bool ParallelBundleAdjuster::Solve(Reconstruction* reconstruction) {
 
   SetUp(reconstruction);
 
+  const int num_residuals = static_cast<int>(2 * measurements_.size());
+
+  size_t num_threads = options_.num_threads;
+  if (num_residuals < options_.min_num_residuals_for_multi_threading) {
+    num_threads = 1;
+  }
+
   pba::ParallelBA::DeviceT device;
-  const size_t kMaxNumResidualsFloat = 100 * 1000;
-  if (config_.NumResiduals(*reconstruction) > kMaxNumResidualsFloat) {
+  const int kMaxNumResidualsFloat = 100 * 1000;
+  if (num_residuals > kMaxNumResidualsFloat) {
     // The threshold for using double precision is empirically chosen and
     // ensures that the system can be reliable solved.
     device = pba::ParallelBA::PBA_CPU_DOUBLE;
@@ -572,7 +592,7 @@ bool ParallelBundleAdjuster::Solve(Reconstruction* reconstruction) {
     }
   }
 
-  pba::ParallelBA pba(device, options_.num_threads);
+  pba::ParallelBA pba(device, num_threads);
 
   pba.SetNextBundleMode(pba::ParallelBA::BUNDLE_FULL);
   pba.EnableRadialDistortion(pba::ParallelBA::PBA_PROJECTION_DISTORTION);
@@ -598,7 +618,7 @@ bool ParallelBundleAdjuster::Solve(Reconstruction* reconstruction) {
   timer.Pause();
 
   // Compose Ceres solver summary from PBA options.
-  summary_.num_residuals_reduced = static_cast<int>(2 * measurements_.size());
+  summary_.num_residuals_reduced = num_residuals;
   summary_.num_effective_parameters_reduced =
       static_cast<int>(8 * config_.NumImages() -
                        2 * config_.NumConstantCameras() + 3 * points3D_.size());
@@ -705,7 +725,7 @@ void ParallelBundleAdjuster::AddImagesToProblem(
 
     CHECK(!config_.HasConstantTvec(image_id))
         << "PBA cannot fix partial extrinsics";
-    if (config_.HasConstantPose(image_id)) {
+    if (!ba_options_.refine_extrinsics || config_.HasConstantPose(image_id)) {
       CHECK(config_.IsConstantCamera(image.CameraId()))
           << "PBA cannot fix extrinsics only";
       pba_camera.SetConstantCamera();
@@ -888,6 +908,9 @@ void RigBundleAdjuster::AddImageToProblem(const image_t image_id,
                                           Reconstruction* reconstruction,
                                           std::vector<CameraRig>* camera_rigs,
                                           ceres::LossFunction* loss_function) {
+  const double max_squared_reproj_error =
+      rig_options_.max_reproj_error * rig_options_.max_reproj_error;
+
   Image& image = reconstruction->Image(image_id);
   Camera& camera = reconstruction->Camera(image.CameraId());
 
@@ -947,10 +970,9 @@ void RigBundleAdjuster::AddImageToProblem(const image_t image_id,
     assert(point3D.Track().Length() > 1);
 
     if (camera_rig != nullptr &&
-        (!HasPointPositiveDepth(rig_proj_matrix, point3D.XYZ()) ||
-         CalculateReprojectionError(point2D.XY(), point3D.XYZ(),
-                                    rig_proj_matrix,
-                                    camera) > rig_options_.max_reproj_error)) {
+        CalculateSquaredReprojectionError(point2D.XY(), point3D.XYZ(),
+                                          rig_proj_matrix,
+                                          camera) > max_squared_reproj_error) {
       continue;
     }
 

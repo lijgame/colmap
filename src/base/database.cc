@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "base/database.h"
 
@@ -516,14 +516,14 @@ TwoViewGeometry Database::ReadTwoViewGeometry(const image_t image_id1,
 
   SQLITE3_CALL(sqlite3_reset(sql_stmt_read_two_view_geometry_));
 
-  if (SwapImagePair(image_id1, image_id2)) {
-    SwapFeatureMatchesBlob(&blob);
-  }
-
   two_view_geometry.inlier_matches = FeatureMatchesFromBlob(blob);
   two_view_geometry.F.transposeInPlace();
   two_view_geometry.E.transposeInPlace();
   two_view_geometry.H.transposeInPlace();
+
+  if (SwapImagePair(image_id1, image_id2)) {
+    two_view_geometry.Invert();
+  }
 
   return two_view_geometry;
 }
@@ -695,26 +695,32 @@ void Database::WriteTwoViewGeometry(
   SQLITE3_CALL(
       sqlite3_bind_int64(sql_stmt_write_two_view_geometry_, 1, pair_id));
 
-  // Important: the swapped data must live until the query is executed.
-  FeatureMatchesBlob inlier_matches =
-      FeatureMatchesToBlob(two_view_geometry.inlier_matches);
+  const TwoViewGeometry* two_view_geometry_ptr = &two_view_geometry;
+
+  // Invert the two-view geometry if the image pair has to be swapped.
+  std::unique_ptr<TwoViewGeometry> swapped_two_view_geometry;
   if (SwapImagePair(image_id1, image_id2)) {
-    SwapFeatureMatchesBlob(&inlier_matches);
+    swapped_two_view_geometry.reset(new TwoViewGeometry());
+    *swapped_two_view_geometry = two_view_geometry;
+    swapped_two_view_geometry->Invert();
+    two_view_geometry_ptr = swapped_two_view_geometry.get();
   }
 
+  const FeatureMatchesBlob inlier_matches =
+      FeatureMatchesToBlob(two_view_geometry_ptr->inlier_matches);
   WriteDynamicMatrixBlob(sql_stmt_write_two_view_geometry_, inlier_matches, 2);
 
   SQLITE3_CALL(sqlite3_bind_int64(sql_stmt_write_two_view_geometry_, 5,
-                                  two_view_geometry.config));
+                                  two_view_geometry_ptr->config));
 
   // Transpose the matrices to obtain row-major data layout.
   // Important: Do not move these objects inside the if-statement, because
   // the objects must live until `sqlite3_step` is called on the statement.
-  const Eigen::Matrix3d Ft = two_view_geometry.F.transpose();
-  const Eigen::Matrix3d Et = two_view_geometry.E.transpose();
-  const Eigen::Matrix3d Ht = two_view_geometry.H.transpose();
+  const Eigen::Matrix3d Ft = two_view_geometry_ptr->F.transpose();
+  const Eigen::Matrix3d Et = two_view_geometry_ptr->E.transpose();
+  const Eigen::Matrix3d Ht = two_view_geometry_ptr->H.transpose();
 
-  if (two_view_geometry.inlier_matches.size() > 0) {
+  if (two_view_geometry_ptr->inlier_matches.size() > 0) {
     WriteStaticMatrixBlob(sql_stmt_write_two_view_geometry_, Ft, 6);
     WriteStaticMatrixBlob(sql_stmt_write_two_view_geometry_, Et, 7);
     WriteStaticMatrixBlob(sql_stmt_write_two_view_geometry_, Ht, 8);
@@ -806,6 +812,113 @@ void Database::ClearMatches() const {
 void Database::ClearTwoViewGeometries() const {
   SQLITE3_CALL(sqlite3_step(sql_stmt_clear_two_view_geometries_));
   SQLITE3_CALL(sqlite3_reset(sql_stmt_clear_two_view_geometries_));
+}
+
+void Database::Merge(const Database& database1, const Database& database2,
+                     Database* merged_database) {
+  // Merge the cameras.
+
+  std::unordered_map<camera_t, camera_t> new_camera_ids1;
+  for (const auto& camera : database1.ReadAllCameras()) {
+    const camera_t new_camera_id = merged_database->WriteCamera(camera);
+    new_camera_ids1.emplace(camera.CameraId(), new_camera_id);
+  }
+
+  std::unordered_map<camera_t, camera_t> new_camera_ids2;
+  for (const auto& camera : database2.ReadAllCameras()) {
+    const camera_t new_camera_id = merged_database->WriteCamera(camera);
+    new_camera_ids2.emplace(camera.CameraId(), new_camera_id);
+  }
+
+  // Merge the images.
+
+  std::unordered_map<image_t, image_t> new_image_ids1;
+  for (auto& image : database1.ReadAllImages()) {
+    image.SetCameraId(new_camera_ids1.at(image.CameraId()));
+    CHECK(!merged_database->ExistsImageWithName(image.Name()))
+        << "The two databases must not contain images with the same name, but "
+           "the there are images with name "
+        << image.Name() << " in both databases";
+    const image_t new_image_id = merged_database->WriteImage(image);
+    new_image_ids1.emplace(image.ImageId(), new_image_id);
+    const auto keypoints = database1.ReadKeypoints(image.ImageId());
+    const auto descriptors = database1.ReadDescriptors(image.ImageId());
+    merged_database->WriteKeypoints(new_image_id, keypoints);
+    merged_database->WriteDescriptors(new_image_id, descriptors);
+  }
+
+  std::unordered_map<image_t, image_t> new_image_ids2;
+  for (auto& image : database2.ReadAllImages()) {
+    image.SetCameraId(new_camera_ids2.at(image.CameraId()));
+    CHECK(!merged_database->ExistsImageWithName(image.Name()))
+        << "The two databases must not contain images with the same name, but "
+           "the there are images with name "
+        << image.Name() << " in both databases";
+    const image_t new_image_id = merged_database->WriteImage(image);
+    new_image_ids2.emplace(image.ImageId(), new_image_id);
+    const auto keypoints = database2.ReadKeypoints(image.ImageId());
+    const auto descriptors = database2.ReadDescriptors(image.ImageId());
+    merged_database->WriteKeypoints(new_image_id, keypoints);
+    merged_database->WriteDescriptors(new_image_id, descriptors);
+  }
+
+  // Merge the matches.
+
+  for (const auto& matches : database1.ReadAllMatches()) {
+    image_t image_id1, image_id2;
+    Database::PairIdToImagePair(matches.first, &image_id1, &image_id2);
+
+    const image_t new_image_id1 = new_image_ids1.at(image_id1);
+    const image_t new_image_id2 = new_image_ids1.at(image_id2);
+
+    merged_database->WriteMatches(new_image_id1, new_image_id2, matches.second);
+  }
+
+  for (const auto& matches : database2.ReadAllMatches()) {
+    image_t image_id1, image_id2;
+    Database::PairIdToImagePair(matches.first, &image_id1, &image_id2);
+
+    const image_t new_image_id1 = new_image_ids2.at(image_id1);
+    const image_t new_image_id2 = new_image_ids2.at(image_id2);
+
+    merged_database->WriteMatches(new_image_id1, new_image_id2, matches.second);
+  }
+
+  // Merge the two-view geometries.
+
+  {
+    std::vector<image_pair_t> image_pair_ids;
+    std::vector<TwoViewGeometry> two_view_geometries;
+    database1.ReadTwoViewGeometries(&image_pair_ids, &two_view_geometries);
+
+    for (size_t i = 0; i < two_view_geometries.size(); ++i) {
+      image_t image_id1, image_id2;
+      Database::PairIdToImagePair(image_pair_ids[i], &image_id1, &image_id2);
+
+      const image_t new_image_id1 = new_image_ids1.at(image_id1);
+      const image_t new_image_id2 = new_image_ids1.at(image_id2);
+
+      merged_database->WriteTwoViewGeometry(new_image_id1, new_image_id2,
+                                            two_view_geometries[i]);
+    }
+  }
+
+  {
+    std::vector<image_pair_t> image_pair_ids;
+    std::vector<TwoViewGeometry> two_view_geometries;
+    database2.ReadTwoViewGeometries(&image_pair_ids, &two_view_geometries);
+
+    for (size_t i = 0; i < two_view_geometries.size(); ++i) {
+      image_t image_id1, image_id2;
+      Database::PairIdToImagePair(image_pair_ids[i], &image_id1, &image_id2);
+
+      const image_t new_image_id1 = new_image_ids2.at(image_id1);
+      const image_t new_image_id2 = new_image_ids2.at(image_id2);
+
+      merged_database->WriteTwoViewGeometry(new_image_id1, new_image_id2,
+                                            two_view_geometries[i]);
+    }
+  }
 }
 
 void Database::BeginTransaction() const {

@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #define TEST_NAME "base/triangulation"
 #include "util/testing.h"
@@ -87,4 +87,7 @@ BOOST_AUTO_TEST_CASE(TestCalculateTriangulationAngle) {
   BOOST_CHECK_CLOSE(
       CalculateTriangulationAngle(tvec1, tvec2, Eigen::Vector3d(0, 0, 50)),
       0.019997333973, 1e-8);
+  BOOST_CHECK_CLOSE(CalculateTriangulationAngles(
+                        tvec1, tvec2, {Eigen::Vector3d(0, 0, 50)})[0],
+                    0.019997333973, 1e-8);
 }

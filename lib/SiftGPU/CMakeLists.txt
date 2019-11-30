@@ -28,8 +28,6 @@ set(SIFT_GPU_SOURCE_FILES
 
 if(CUDA_ENABLED)
     add_definitions("-DCUDA_SIFTGPU_ENABLED")
-    # Fix for Ubuntu 16.04.
-    add_definitions("-D_FORCE_INLINES")
 
     set(SIFT_GPU_SOURCE_FILES
         ${SIFT_GPU_SOURCE_FILES}
@@ -43,12 +41,14 @@ if(CUDA_ENABLED)
         SiftMatchCU.h
     )
 
-    COLMAP_ADD_CUDA_LIBRARY(sift_gpu ${SIFT_GPU_SOURCE_FILES})
+    COLMAP_ADD_STATIC_CUDA_LIBRARY(sift_gpu ${SIFT_GPU_SOURCE_FILES})
 else()
-    COLMAP_ADD_LIBRARY(sift_gpu ${SIFT_GPU_SOURCE_FILES})
+    COLMAP_ADD_STATIC_LIBRARY(sift_gpu ${SIFT_GPU_SOURCE_FILES})
 endif()
 
 target_link_libraries(sift_gpu
     ${SIFT_GPU_LIBRARIES}
     ${GLEW_LIBRARIES}
+    ${OPENGL_gl_LIBRARY}
+    ${OPENGL_glu_LIBRARY}
 )

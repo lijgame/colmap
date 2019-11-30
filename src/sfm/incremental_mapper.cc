@@ -27,10 +27,11 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "sfm/incremental_mapper.h"
 
+#include <array>
 #include <fstream>
 
 #include "base/projection.h"
@@ -85,6 +86,7 @@ bool IncrementalMapper::Options::Check() const {
   CHECK_OPTION_GE(abs_pose_min_inlier_ratio, 0.0);
   CHECK_OPTION_LE(abs_pose_min_inlier_ratio, 1.0);
   CHECK_OPTION_GE(local_ba_num_images, 2);
+  CHECK_OPTION_GE(local_ba_min_tri_angle, 0.0);
   CHECK_OPTION_GE(min_focal_length_ratio, 0.0);
   CHECK_OPTION_GE(max_focal_length_ratio, min_focal_length_ratio);
   CHECK_OPTION_GE(max_extra_param, 0.0);
@@ -114,6 +116,10 @@ void IncrementalMapper::BeginReconstruction(Reconstruction* reconstruction) {
   for (const image_t image_id : reconstruction_->RegImageIds()) {
     RegisterImageEvent(image_id);
   }
+
+  existing_image_ids_ =
+      std::unordered_set<image_t>(reconstruction->RegImageIds().begin(),
+                                  reconstruction->RegImageIds().end());
 
   prev_init_image_pair_id_ = kInvalidImagePairId;
   prev_init_two_view_geometry_ = TwoViewGeometry();
@@ -439,8 +445,9 @@ bool IncrementalMapper::RegisterNextImage(const Options& options,
       options.abs_pose_min_inlier_ratio;
   // Use high confidence to avoid preemptive termination of P3P RANSAC
   // - too early termination may lead to bad registration.
-  abs_pose_options.ransac_options.min_num_trials = 30;
-  abs_pose_options.ransac_options.confidence = 0.9999;
+  abs_pose_options.ransac_options.min_num_trials = 100;
+  abs_pose_options.ransac_options.max_num_trials = 10000;
+  abs_pose_options.ransac_options.confidence = 0.99999;
 
   AbsolutePoseRefinementOptions abs_pose_refinement_options;
   if (refined_cameras_.count(image.CameraId()) > 0) {
@@ -458,6 +465,7 @@ bool IncrementalMapper::RegisterNextImage(const Options& options,
     } else {
       abs_pose_options.estimate_focal_length = false;
       abs_pose_refinement_options.refine_focal_length = false;
+      abs_pose_refinement_options.refine_extra_params = false;
     }
   } else {
     // Camera not refined before.
@@ -513,6 +521,7 @@ bool IncrementalMapper::RegisterNextImage(const Options& options,
         const point3D_t point3D_id = tri_corrs[i].second;
         const TrackElement track_el(image_id, point2D_idx);
         reconstruction_->AddObservation(point3D_id, track_el);
+        triangulator_->AddModifiedPoint3D(point3D_id);
       }
     }
   }
@@ -572,13 +581,27 @@ IncrementalMapper::AdjustLocalBundle(
       ba_config.AddImage(local_image_id);
     }
 
+    // Fix the existing images, if option specified.
+    if (options.fix_existing_images) {
+      for (const image_t local_image_id : local_bundle) {
+        if (existing_image_ids_.count(local_image_id)) {
+          ba_config.SetConstantPose(local_image_id);
+        }
+      }
+    }
+
     // Fix 7 DOF to avoid scale/rotation/translation drift in bundle adjustment.
     if (local_bundle.size() == 1) {
       ba_config.SetConstantPose(local_bundle[0]);
       ba_config.SetConstantTvec(image_id, {0});
     } else if (local_bundle.size() > 1) {
-      ba_config.SetConstantPose(local_bundle[local_bundle.size() - 1]);
-      ba_config.SetConstantTvec(local_bundle[local_bundle.size() - 2], {0});
+      const image_t image_id1 = local_bundle[local_bundle.size() - 1];
+      const image_t image_id2 = local_bundle[local_bundle.size() - 2];
+      ba_config.SetConstantPose(image_id1);
+      if (!options.fix_existing_images ||
+          !existing_image_ids_.count(image_id2)) {
+        ba_config.SetConstantTvec(image_id2, {0});
+      }
     }
 
     // Make sure, we refine all new and short-track 3D points, no matter if
@@ -634,7 +657,7 @@ IncrementalMapper::AdjustLocalBundle(
 }
 
 bool IncrementalMapper::AdjustGlobalBundle(
-    const BundleAdjustmentOptions& ba_options) {
+    const Options& options, const BundleAdjustmentOptions& ba_options) {
   CHECK_NOTNULL(reconstruction_);
 
   const std::vector<image_t>& reg_image_ids = reconstruction_->RegImageIds();
@@ -651,8 +674,22 @@ bool IncrementalMapper::AdjustGlobalBundle(
   for (const image_t image_id : reg_image_ids) {
     ba_config.AddImage(image_id);
   }
+
+  // Fix the existing images, if option specified.
+  if (options.fix_existing_images) {
+    for (const image_t image_id : reg_image_ids) {
+      if (existing_image_ids_.count(image_id)) {
+        ba_config.SetConstantPose(image_id);
+      }
+    }
+  }
+
+  // Fix 7-DOFs of the bundle adjustment problem.
   ba_config.SetConstantPose(reg_image_ids[0]);
-  ba_config.SetConstantTvec(reg_image_ids[1], {0});
+  if (!options.fix_existing_images ||
+      !existing_image_ids_.count(reg_image_ids[1])) {
+    ba_config.SetConstantTvec(reg_image_ids[1], {0});
+  }
 
   // Run bundle adjustment.
   BundleAdjuster bundle_adjuster(ba_options, ba_config);
@@ -902,44 +939,164 @@ std::vector<image_t> IncrementalMapper::FindLocalBundle(
 
   // Extract all images that have at least one 3D point with the query image
   // in common, and simultaneously count the number of common 3D points.
-  std::unordered_map<image_t, size_t> num_shared_observations;
+
+  std::unordered_map<image_t, size_t> shared_observations;
+
+  std::unordered_set<point3D_t> point3D_ids;
+  point3D_ids.reserve(image.NumPoints3D());
+
   for (const Point2D& point2D : image.Points2D()) {
     if (point2D.HasPoint3D()) {
+      point3D_ids.insert(point2D.Point3DId());
       const Point3D& point3D = reconstruction_->Point3D(point2D.Point3DId());
       for (const TrackElement& track_el : point3D.Track().Elements()) {
         if (track_el.image_id != image_id) {
-          num_shared_observations[track_el.image_id] += 1;
+          shared_observations[track_el.image_id] += 1;
         }
       }
     }
   }
 
-  std::vector<std::pair<image_t, size_t>> local_bundle(
-      num_shared_observations.begin(), num_shared_observations.end());
+  // Sort overlapping images according to number of shared observations.
+
+  std::vector<std::pair<image_t, size_t>> overlapping_images(
+      shared_observations.begin(), shared_observations.end());
+  std::sort(overlapping_images.begin(), overlapping_images.end(),
+            [](const std::pair<image_t, size_t>& image1,
+               const std::pair<image_t, size_t>& image2) {
+              return image1.second > image2.second;
+            });
 
   // The local bundle is composed of the given image and its most connected
   // neighbor images, hence the subtraction of 1.
+
   const size_t num_images =
       static_cast<size_t>(options.local_ba_num_images - 1);
-  const size_t num_eff_images = std::min(num_images, local_bundle.size());
+  const size_t num_eff_images = std::min(num_images, overlapping_images.size());
 
-  // Sort according to number of common 3D points.
-  std::partial_sort(local_bundle.begin(), local_bundle.begin() + num_eff_images,
-                    local_bundle.end(),
-                    [](const std::pair<image_t, size_t>& image1,
-                       const std::pair<image_t, size_t>& image2) {
-                      return image1.second > image2.second;
-                    });
+  // Extract most connected images and ensure sufficient triangulation angle.
 
-  // Extract most connected images.
-  std::vector<image_t> image_ids(num_eff_images);
-  std::transform(local_bundle.begin(), local_bundle.begin() + num_eff_images,
-                 image_ids.begin(),
-                 [](const std::pair<image_t, size_t>& image_num_shared) {
-                   return image_num_shared.first;
-                 });
+  std::vector<image_t> local_bundle_image_ids;
+  local_bundle_image_ids.reserve(num_eff_images);
 
-  return image_ids;
+  // If the number of overlapping images equals the number of desired images in
+  // the local bundle, then simply copy over the image identifiers.
+  if (overlapping_images.size() == num_eff_images) {
+    for (const auto& overlapping_image : overlapping_images) {
+      local_bundle_image_ids.push_back(overlapping_image.first);
+    }
+    return local_bundle_image_ids;
+  }
+
+  // In the following iteration, we start with the most overlapping images and
+  // check whether it has sufficient triangulation angle. If none of the
+  // overlapping images has sufficient triangulation angle, we relax the
+  // triangulation angle threshold and start from the most overlapping image
+  // again. In the end, if we still haven't found enough images, we simply use
+  // the most overlapping images.
+
+  const double min_tri_angle_rad = DegToRad(options.local_ba_min_tri_angle);
+
+  // The selection thresholds (minimum triangulation angle, minimum number of
+  // shared observations), which are successively relaxed.
+  const std::array<std::pair<double, double>, 8> selection_thresholds = {{
+      std::make_pair(min_tri_angle_rad / 1.0, 0.6 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 1.5, 0.6 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 2.0, 0.5 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 2.5, 0.4 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 3.0, 0.3 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 4.0, 0.2 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 5.0, 0.1 * image.NumPoints3D()),
+      std::make_pair(min_tri_angle_rad / 6.0, 0.1 * image.NumPoints3D()),
+  }};
+
+  const Eigen::Vector3d proj_center = image.ProjectionCenter();
+  std::vector<Eigen::Vector3d> shared_points3D;
+  shared_points3D.reserve(image.NumPoints3D());
+  std::vector<double> tri_angles(overlapping_images.size(), -1.0);
+  std::vector<char> used_overlapping_images(overlapping_images.size(), false);
+
+  for (const auto& selection_threshold : selection_thresholds) {
+    for (size_t overlapping_image_idx = 0;
+         overlapping_image_idx < overlapping_images.size();
+         ++overlapping_image_idx) {
+      // Check if the image has sufficient overlap. Since the images are ordered
+      // based on the overlap, we can just skip the remaining ones.
+      if (overlapping_images[overlapping_image_idx].second <
+          selection_threshold.second) {
+        break;
+      }
+
+      // Check if the image is already in the local bundle.
+      if (used_overlapping_images[overlapping_image_idx]) {
+        continue;
+      }
+
+      const auto& overlapping_image = reconstruction_->Image(
+          overlapping_images[overlapping_image_idx].first);
+      const Eigen::Vector3d overlapping_proj_center =
+          overlapping_image.ProjectionCenter();
+
+      // In the first iteration, compute the triangulation angle. In later
+      // iterations, reuse the previously computed value.
+      double& tri_angle = tri_angles[overlapping_image_idx];
+      if (tri_angle < 0.0) {
+        // Collect the commonly observed 3D points.
+        shared_points3D.clear();
+        for (const Point2D& point2D : image.Points2D()) {
+          if (point2D.HasPoint3D() && point3D_ids.count(point2D.Point3DId())) {
+            shared_points3D.push_back(
+                reconstruction_->Point3D(point2D.Point3DId()).XYZ());
+          }
+        }
+
+        // Calculate the triangulation angle at a certain percentile.
+        const double kTriangulationAnglePercentile = 75;
+        tri_angle = Percentile(
+            CalculateTriangulationAngles(proj_center, overlapping_proj_center,
+                                         shared_points3D),
+            kTriangulationAnglePercentile);
+      }
+
+      // Check that the image has sufficient triangulation angle.
+      if (tri_angle >= selection_threshold.first) {
+        local_bundle_image_ids.push_back(overlapping_image.ImageId());
+        used_overlapping_images[overlapping_image_idx] = true;
+        // Check if we already collected enough images.
+        if (local_bundle_image_ids.size() >= num_eff_images) {
+          break;
+        }
+      }
+    }
+
+    // Check if we already collected enough images.
+    if (local_bundle_image_ids.size() >= num_eff_images) {
+      break;
+    }
+  }
+
+  // In case there are not enough images with sufficient triangulation angle,
+  // simply fill up the rest with the most overlapping images.
+
+  if (local_bundle_image_ids.size() < num_eff_images) {
+    for (size_t overlapping_image_idx = 0;
+         overlapping_image_idx < overlapping_images.size();
+         ++overlapping_image_idx) {
+      // Collect image if it is not yet in the local bundle.
+      if (!used_overlapping_images[overlapping_image_idx]) {
+        local_bundle_image_ids.push_back(
+            overlapping_images[overlapping_image_idx].first);
+        used_overlapping_images[overlapping_image_idx] = true;
+
+        // Check if we already collected enough images.
+        if (local_bundle_image_ids.size() >= num_eff_images) {
+          break;
+        }
+      }
+    }
+  }
+
+  return local_bundle_image_ids;
 }
 
 void IncrementalMapper::RegisterImageEvent(const image_t image_id) {
@@ -997,7 +1154,7 @@ bool IncrementalMapper::EstimateInitialTwoViewGeometry(
 
   TwoViewGeometry two_view_geometry;
   TwoViewGeometry::Options two_view_geometry_options;
-  two_view_geometry_options.ransac_options.min_num_trials = 25;
+  two_view_geometry_options.ransac_options.min_num_trials = 30;
   two_view_geometry_options.ransac_options.max_error = options.init_max_error;
   two_view_geometry.EstimateCalibrated(camera1, points1, camera2, points2,
                                        matches, two_view_geometry_options);

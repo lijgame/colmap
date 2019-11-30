@@ -27,7 +27,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 #include "base/undistortion.h"
 
@@ -92,8 +92,10 @@ void WriteCOLMAPCommands(const bool geometric,
       *file << indent << "  --pmvs_option_name " << pmvs_option_name << " \\"
             << std::endl;
     }
-    *file << indent << "  --DenseStereo.max_image_size 2000 \\" << std::endl;
-    *file << indent << "  --DenseStereo.geom_consistency true" << std::endl;
+    *file << indent << "  --PatchMatchStereo.max_image_size 2000 \\"
+          << std::endl;
+    *file << indent << "  --PatchMatchStereo.geom_consistency true"
+          << std::endl;
   } else {
     *file << indent << "$COLMAP_EXE_PATH/patch_match_stereo \\" << std::endl;
     *file << indent << "  --workspace_path " << workspace_path << " \\"
@@ -104,8 +106,10 @@ void WriteCOLMAPCommands(const bool geometric,
       *file << indent << "  --pmvs_option_name " << pmvs_option_name << " \\"
             << std::endl;
     }
-    *file << indent << "  --DenseStereo.max_image_size 2000 \\" << std::endl;
-    *file << indent << "  --DenseStereo.geom_consistency false" << std::endl;
+    *file << indent << "  --PatchMatchStereo.max_image_size 2000 \\"
+          << std::endl;
+    *file << indent << "  --PatchMatchStereo.geom_consistency false"
+          << std::endl;
   }
 
   *file << indent << "$COLMAP_EXE_PATH/stereo_fusion \\" << std::endl;
@@ -554,6 +558,67 @@ void CMPMVSUndistorter::Undistort(const size_t reg_image_idx) const {
 
   undistorted_bitmap.Write(output_image_path);
   WriteProjectionMatrix(proj_matrix_path, undistorted_camera, image, "CONTOUR");
+}
+
+PureImageUndistorter::PureImageUndistorter(
+  const UndistortCameraOptions& options, const std::string& image_path,
+  const std::string& output_path,
+  const std::vector<std::pair<std::string, Camera>>& image_names_and_cameras)
+    : options_(options),
+      image_path_(image_path),
+      output_path_(output_path),
+      image_names_and_cameras_(image_names_and_cameras) {}
+
+void PureImageUndistorter::Run() {
+  PrintHeading1("Image undistortion");
+    
+  CreateDirIfNotExists(output_path_);
+    
+  ThreadPool thread_pool;
+  std::vector<std::future<void>> futures;
+  size_t num_images = image_names_and_cameras_.size();
+  futures.reserve(num_images);
+  for (size_t i = 0; i < num_images; ++i) {
+    futures.push_back(thread_pool.AddTask(&PureImageUndistorter::Undistort,
+                                          this, i));
+  }
+    
+  for (size_t i = 0; i < futures.size(); ++i) {
+    if (IsStopped()) {
+      break;
+    }
+    
+    std::cout << StringPrintf("Undistorting image [%d/%d]", i + 1,
+                              futures.size())
+              << std::endl;
+      
+    futures[i].get();
+  }
+  
+  GetTimer().PrintMinutes();
+}
+
+void PureImageUndistorter::Undistort(const size_t image_idx) const {
+  const std::string& image_name = image_names_and_cameras_[image_idx].first;
+  const Camera& camera = image_names_and_cameras_[image_idx].second;
+ 
+  const std::string output_image_path =
+  JoinPaths(output_path_, image_name);
+  
+  Bitmap distorted_bitmap;
+  const std::string input_image_path = JoinPaths(image_path_, image_name);
+  if (!distorted_bitmap.Read(input_image_path)) {
+    std::cerr << "ERROR: Cannot read image at path " << input_image_path
+              << std::endl;
+    return;
+  }
+    
+  Bitmap undistorted_bitmap;
+  Camera undistorted_camera;
+  UndistortImage(options_, distorted_bitmap, camera, &undistorted_bitmap,
+                 &undistorted_camera);
+    
+  undistorted_bitmap.Write(output_image_path);
 }
 
 StereoImageRectifier::StereoImageRectifier(

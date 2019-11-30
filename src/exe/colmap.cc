@@ -27,7 +27,11 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
+// Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -58,13 +62,17 @@ const bool kUseOpenGL = true;
 int RunGraphicalUserInterface(int argc, char** argv) {
   OptionManager options;
 
+  std::string import_path;
+
   if (argc > 1) {
+    options.AddDefaultOption("import_path", &import_path);
     options.AddAllOptions();
     options.Parse(argc, argv);
   }
 
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
   QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+  QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 #endif
 
   Q_INIT_RESOURCE(resources);
@@ -73,6 +81,10 @@ int RunGraphicalUserInterface(int argc, char** argv) {
 
   MainWindow main_window(options);
   main_window.show();
+
+  if (!import_path.empty()) {
+    main_window.ImportReconstruction(import_path);
+  }
 
   return app.exec();
 }
@@ -87,11 +99,12 @@ int RunAutomaticReconstructor(int argc, char** argv) {
   options.AddRequiredOption("workspace_path",
                             &reconstruction_options.workspace_path);
   options.AddRequiredOption("image_path", &reconstruction_options.image_path);
+  options.AddDefaultOption("mask_path", &reconstruction_options.mask_path);
   options.AddDefaultOption("vocab_tree_path",
                            &reconstruction_options.vocab_tree_path);
   options.AddDefaultOption("data_type", &data_type,
                            "{individual, video, internet}");
-  options.AddDefaultOption("quality", &quality, "{low, medium, high}");
+  options.AddDefaultOption("quality", &quality, "{low, medium, high, extreme}");
   options.AddDefaultOption("camera_model",
                            &reconstruction_options.camera_model);
   options.AddDefaultOption("single_camera",
@@ -128,6 +141,9 @@ int RunAutomaticReconstructor(int argc, char** argv) {
   } else if (quality == "high") {
     reconstruction_options.quality =
         AutomaticReconstructionController::Quality::HIGH;
+  } else if (quality == "extreme") {
+    reconstruction_options.quality =
+        AutomaticReconstructionController::Quality::EXTREME;
   } else {
     LOG(FATAL) << "Invalid quality provided";
   }
@@ -170,6 +186,16 @@ int RunBundleAdjuster(int argc, char** argv) {
   options.AddBundleAdjustmentOptions();
   options.Parse(argc, argv);
 
+  if (!ExistsDir(input_path)) {
+    std::cerr << "ERROR: `input_path` is not a directory" << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  if (!ExistsDir(output_path)) {
+    std::cerr << "ERROR: `output_path` is not a directory" << std::endl;
+    return EXIT_FAILURE;
+  }
+
   Reconstruction reconstruction;
   reconstruction.Read(input_path);
 
@@ -183,19 +209,19 @@ int RunBundleAdjuster(int argc, char** argv) {
 }
 
 int RunColorExtractor(int argc, char** argv) {
-  std::string import_path;
-  std::string export_path;
+  std::string input_path;
+  std::string output_path;
 
   OptionManager options;
   options.AddImageOptions();
-  options.AddDefaultOption("import_path", &import_path);
-  options.AddRequiredOption("export_path", &export_path);
+  options.AddDefaultOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
   options.Parse(argc, argv);
 
   Reconstruction reconstruction;
-  reconstruction.Read(import_path);
+  reconstruction.Read(input_path);
   reconstruction.ExtractColorsForAllImages(*options.image_path);
-  reconstruction.Write(export_path);
+  reconstruction.Write(output_path);
 
   return EXIT_SUCCESS;
 }
@@ -206,6 +232,30 @@ int RunDatabaseCreator(int argc, char** argv) {
   options.Parse(argc, argv);
 
   Database database(*options.database_path);
+
+  return EXIT_SUCCESS;
+}
+
+int RunDatabaseMerger(int argc, char** argv) {
+  std::string database_path1;
+  std::string database_path2;
+  std::string merged_database_path;
+
+  OptionManager options;
+  options.AddRequiredOption("database_path1", &database_path1);
+  options.AddRequiredOption("database_path2", &database_path2);
+  options.AddRequiredOption("merged_database_path", &merged_database_path);
+  options.Parse(argc, argv);
+
+  if (ExistsFile(merged_database_path)) {
+    std::cout << "ERROR: Merged database file must not exist." << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  Database database1(database_path1);
+  Database database2(database_path2);
+  Database merged_database(merged_database_path);
+  Database::Merge(database1, database2, &merged_database);
 
   return EXIT_SUCCESS;
 }
@@ -273,6 +323,36 @@ int RunPoissonMesher(int argc, char** argv) {
   return EXIT_SUCCESS;
 }
 
+int RunProjectGenerator(int argc, char** argv) {
+  std::string output_path;
+  std::string quality = "high";
+
+  OptionManager options;
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption("quality", &quality, "{low, medium, high, extreme}");
+  options.Parse(argc, argv);
+
+  OptionManager output_options;
+  output_options.AddAllOptions();
+
+  StringToLower(&quality);
+  if (quality == "low") {
+    output_options.ModifyForLowQuality();
+  } else if (quality == "medium") {
+    output_options.ModifyForMediumQuality();
+  } else if (quality == "high") {
+    output_options.ModifyForHighQuality();
+  } else if (quality == "extreme") {
+    output_options.ModifyForExtremeQuality();
+  } else {
+    LOG(FATAL) << "Invalid quality provided";
+  }
+
+  output_options.Write(output_path);
+
+  return EXIT_SUCCESS;
+}
+
 int RunDelaunayMesher(int argc, char** argv) {
 #ifndef CGAL_ENABLED
   std::cerr << "ERROR: Delaunay meshing requires CGAL, which is not "
@@ -285,8 +365,10 @@ int RunDelaunayMesher(int argc, char** argv) {
   std::string output_path;
 
   OptionManager options;
-  options.AddRequiredOption("input_path", &input_path);
-  options.AddDefaultOption("input_type", &input_type);
+  options.AddRequiredOption(
+      "input_path", &input_path,
+      "Path to either the dense workspace folder or the sparse reconstruction");
+  options.AddDefaultOption("input_type", &input_type, "{dense, sparse}");
   options.AddRequiredOption("output_path", &output_path);
   options.AddDelaunayMeshingOptions();
   options.Parse(argc, argv);
@@ -321,7 +403,9 @@ int RunPatchMatchStereo(int argc, char** argv) {
   std::string pmvs_option_name = "option-all";
 
   OptionManager options;
-  options.AddRequiredOption("workspace_path", &workspace_path);
+  options.AddRequiredOption(
+      "workspace_path", &workspace_path,
+      "Path to the folder containing the undistorted images");
   options.AddDefaultOption("workspace_format", &workspace_format,
                            "{COLMAP, PMVS}");
   options.AddDefaultOption("pmvs_option_name", &pmvs_option_name);
@@ -372,6 +456,24 @@ int RunExhaustiveMatcher(int argc, char** argv) {
   return EXIT_SUCCESS;
 }
 
+bool VerifyCameraParams(const std::string& camera_model,
+                        const std::string& params) {
+  if (!ExistsCameraModelWithName(camera_model)) {
+    std::cerr << "ERROR: Camera model does not exist" << std::endl;
+    return false;
+  }
+
+  const std::vector<double> camera_params = CSVToVector<double>(params);
+  const int camera_model_id = CameraModelNameToId(camera_model);
+
+  if (camera_params.size() > 0 &&
+      !CameraModelVerifyParams(camera_model_id, camera_params)) {
+    std::cerr << "ERROR: Invalid camera parameters" << std::endl;
+    return false;
+  }
+  return true;
+}
+
 int RunFeatureExtractor(int argc, char** argv) {
   std::string image_list_path;
 
@@ -397,14 +499,8 @@ int RunFeatureExtractor(int argc, char** argv) {
     std::cerr << "ERROR: Camera model does not exist" << std::endl;
   }
 
-  const std::vector<double> camera_params =
-      CSVToVector<double>(options.image_reader->camera_params);
-  const int camera_model_id =
-      CameraModelNameToId(options.image_reader->camera_model);
-
-  if (camera_params.size() > 0 &&
-      !CameraModelVerifyParams(camera_model_id, camera_params)) {
-    std::cerr << "ERROR: Invalid camera parameters" << std::endl;
+  if (!VerifyCameraParams(options.image_reader->camera_model,
+                          options.image_reader->camera_params)) {
     return EXIT_FAILURE;
   }
 
@@ -449,14 +545,8 @@ int RunFeatureImporter(int argc, char** argv) {
     }
   }
 
-  const std::vector<double> camera_params =
-      CSVToVector<double>(options.image_reader->camera_params);
-  const int camera_model_id =
-      CameraModelNameToId(options.image_reader->camera_model);
-
-  if (camera_params.size() > 0 &&
-      !CameraModelVerifyParams(camera_model_id, camera_params)) {
-    std::cerr << "ERROR: Invalid camera parameters" << std::endl;
+  if (!VerifyCameraParams(options.image_reader->camera_model,
+                          options.image_reader->camera_params)) {
     return EXIT_FAILURE;
   }
 
@@ -498,6 +588,133 @@ std::vector<std::pair<image_t, image_t>> ReadStereoImagePairs(
   return stereo_pairs;
 }
 
+int RunImageDeleter(int argc, char** argv) {
+  std::string input_path;
+  std::string output_path;
+  std::string image_ids_path;
+  std::string image_names_path;
+
+  OptionManager options;
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption(
+      "image_ids_path", &image_ids_path,
+      "Path to text file containing one image_id to delete per line");
+  options.AddDefaultOption(
+      "image_names_path", &image_names_path,
+      "Path to text file containing one image name to delete per line");
+  options.Parse(argc, argv);
+
+  Reconstruction reconstruction;
+  reconstruction.Read(input_path);
+
+  if (!image_ids_path.empty()) {
+    const auto image_ids = ReadTextFileLines(image_ids_path);
+
+    for (const auto image_id_str : image_ids) {
+      if (image_id_str.empty()) {
+        continue;
+      }
+
+      const image_t image_id = std::stoi(image_id_str);
+      if (reconstruction.ExistsImage(image_id)) {
+        const auto& image = reconstruction.Image(image_id);
+        std::cout
+            << StringPrintf(
+                   "Deleting image_id=%d, image_name=%s from reconstruction",
+                   image.ImageId(), image.Name().c_str())
+            << std::endl;
+        reconstruction.DeRegisterImage(image_id);
+      } else {
+        std::cout << StringPrintf(
+                         "WARNING: Skipping image_id=%s, because it does not "
+                         "exist in the reconstruction",
+                         image_id_str.c_str())
+                  << std::endl;
+      }
+    }
+  }
+
+  if (!image_names_path.empty()) {
+    const auto image_names = ReadTextFileLines(image_names_path);
+
+    for (const auto image_name : image_names) {
+      if (image_name.empty()) {
+        continue;
+      }
+
+      const Image* image = reconstruction.FindImageWithName(image_name);
+      if (image != nullptr) {
+        std::cout
+            << StringPrintf(
+                   "Deleting image_id=%d, image_name=%s from reconstruction",
+                   image->ImageId(), image->Name().c_str())
+            << std::endl;
+        reconstruction.DeRegisterImage(image->ImageId());
+      } else {
+        std::cout << StringPrintf(
+                         "WARNING: Skipping image_name=%s, because it does not "
+                         "exist in the reconstruction",
+                         image_name.c_str())
+                  << std::endl;
+      }
+    }
+  }
+
+  reconstruction.Write(output_path);
+
+  return EXIT_SUCCESS;
+}
+
+int RunImageFilterer(int argc, char** argv) {
+  std::string input_path;
+  std::string output_path;
+  double min_focal_length_ratio = 0.1;
+  double max_focal_length_ratio = 10.0;
+  double max_extra_param = 100.0;
+  size_t min_num_observations = 10;
+
+  OptionManager options;
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption("min_focal_length_ratio", &min_focal_length_ratio);
+  options.AddDefaultOption("max_focal_length_ratio", &max_focal_length_ratio);
+  options.AddDefaultOption("max_extra_param", &max_extra_param);
+  options.AddDefaultOption("min_num_observations", &min_num_observations);
+  options.Parse(argc, argv);
+
+  Reconstruction reconstruction;
+  reconstruction.Read(input_path);
+
+  const size_t num_reg_images = reconstruction.NumRegImages();
+
+  reconstruction.FilterImages(min_focal_length_ratio, max_focal_length_ratio,
+                              max_extra_param);
+
+  std::vector<image_t> filtered_image_ids;
+  for (const auto& image : reconstruction.Images()) {
+    if (image.second.IsRegistered() &&
+        image.second.NumPoints3D() < min_num_observations) {
+      filtered_image_ids.push_back(image.first);
+    }
+  }
+
+  for (const auto image_id : filtered_image_ids) {
+    reconstruction.DeRegisterImage(image_id);
+  }
+
+  const size_t num_filtered_images =
+      num_reg_images - reconstruction.NumRegImages();
+
+  std::cout << StringPrintf("Filtered %d images from a total of %d images",
+                            num_filtered_images, num_reg_images)
+            << std::endl;
+
+  reconstruction.Write(output_path);
+
+  return EXIT_SUCCESS;
+}
+
 int RunImageRectifier(int argc, char** argv) {
   std::string input_path;
   std::string output_path;
@@ -534,23 +751,23 @@ int RunImageRectifier(int argc, char** argv) {
 }
 
 int RunImageRegistrator(int argc, char** argv) {
-  std::string import_path;
-  std::string export_path;
+  std::string input_path;
+  std::string output_path;
 
   OptionManager options;
   options.AddDatabaseOptions();
-  options.AddRequiredOption("import_path", &import_path);
-  options.AddRequiredOption("export_path", &export_path);
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
   options.AddMapperOptions();
   options.Parse(argc, argv);
 
-  if (!ExistsDir(import_path)) {
-    std::cerr << "ERROR: `import_path` is not a directory" << std::endl;
+  if (!ExistsDir(input_path)) {
+    std::cerr << "ERROR: `input_path` is not a directory" << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (!ExistsDir(export_path)) {
-    std::cerr << "ERROR: `export_path` is not a directory" << std::endl;
+  if (!ExistsDir(output_path)) {
+    std::cerr << "ERROR: `output_path` is not a directory" << std::endl;
     return EXIT_FAILURE;
   }
 
@@ -574,7 +791,7 @@ int RunImageRegistrator(int argc, char** argv) {
   std::cout << std::endl;
 
   Reconstruction reconstruction;
-  reconstruction.Read(import_path);
+  reconstruction.Read(input_path);
 
   IncrementalMapper mapper(&database_cache);
   mapper.BeginReconstruction(&reconstruction);
@@ -599,7 +816,7 @@ int RunImageRegistrator(int argc, char** argv) {
   const bool kDiscardReconstruction = false;
   mapper.EndReconstruction(kDiscardReconstruction);
 
-  reconstruction.Write(export_path);
+  reconstruction.Write(output_path);
 
   return EXIT_SUCCESS;
 }
@@ -615,7 +832,8 @@ int RunImageUndistorter(int argc, char** argv) {
   options.AddImageOptions();
   options.AddRequiredOption("input_path", &input_path);
   options.AddRequiredOption("output_path", &output_path);
-  options.AddDefaultOption("output_type", &output_type);
+  options.AddDefaultOption("output_type", &output_type,
+                           "{COLMAP, PMVS, CMP-MVS}");
   options.AddDefaultOption("blank_pixels",
                            &undistort_camera_options.blank_pixels);
   options.AddDefaultOption("min_scale", &undistort_camera_options.min_scale);
@@ -659,38 +877,127 @@ int RunImageUndistorter(int argc, char** argv) {
   return EXIT_SUCCESS;
 }
 
+int RunImageUndistorterStandalone(int argc, char** argv) {
+  std::string input_file;
+  std::string output_path;
+
+  UndistortCameraOptions undistort_camera_options;
+
+  OptionManager options;
+  options.AddImageOptions();
+  options.AddRequiredOption("input_file", &input_file);
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption("blank_pixels",
+                           &undistort_camera_options.blank_pixels);
+  options.AddDefaultOption("min_scale", &undistort_camera_options.min_scale);
+  options.AddDefaultOption("max_scale", &undistort_camera_options.max_scale);
+  options.AddDefaultOption("max_image_size",
+                           &undistort_camera_options.max_image_size);
+  options.AddDefaultOption("roi_min_x", &undistort_camera_options.roi_min_x);
+  options.AddDefaultOption("roi_min_y", &undistort_camera_options.roi_min_y);
+  options.AddDefaultOption("roi_max_x", &undistort_camera_options.roi_max_x);
+  options.AddDefaultOption("roi_max_y", &undistort_camera_options.roi_max_y);
+  options.Parse(argc, argv);
+
+  CreateDirIfNotExists(output_path);
+
+  // Loads a text file containing the image names and camera information.
+  // The format of the text file is
+  //   image_name CAMERA_MODEL camera_params
+  std::vector<std::pair<std::string, Camera>> image_names_and_cameras;
+
+  {
+    std::ifstream file(input_file);
+    CHECK(file.is_open()) << input_file;
+
+    std::string line;
+    std::vector<std::string> lines;
+    while (std::getline(file, line)) {
+      StringTrim(&line);
+
+      if (line.empty()) {
+        continue;
+      }
+
+      std::string item;
+      std::stringstream line_stream(line);
+
+      // Loads the image name.
+      std::string image_name;
+      std::getline(line_stream, image_name, ' ');
+
+      // Loads the camera and its parameters
+      class Camera camera;
+
+      std::getline(line_stream, item, ' ');
+      if (!ExistsCameraModelWithName(item)) {
+        std::cerr << "ERROR: Camera model " << item << " does not exist"
+                  << std::endl;
+        return EXIT_FAILURE;
+      }
+      camera.SetModelIdFromName(item);
+
+      std::getline(line_stream, item, ' ');
+      camera.SetWidth(std::stoll(item));
+
+      std::getline(line_stream, item, ' ');
+      camera.SetHeight(std::stoll(item));
+
+      camera.Params().clear();
+      while (!line_stream.eof()) {
+        std::getline(line_stream, item, ' ');
+        camera.Params().push_back(std::stold(item));
+      }
+
+      CHECK(camera.VerifyParams());
+
+      image_names_and_cameras.emplace_back(image_name, camera);
+    }
+  }
+
+  std::unique_ptr<Thread> undistorter;
+  undistorter.reset(new PureImageUndistorter(undistort_camera_options,
+                                             *options.image_path, output_path,
+                                             image_names_and_cameras));
+
+  undistorter->Start();
+  undistorter->Wait();
+
+  return EXIT_SUCCESS;
+}
+
 int RunMapper(int argc, char** argv) {
-  std::string import_path;
-  std::string export_path;
+  std::string input_path;
+  std::string output_path;
   std::string image_list_path;
 
   OptionManager options;
   options.AddDatabaseOptions();
   options.AddImageOptions();
-  options.AddDefaultOption("import_path", &import_path);
-  options.AddRequiredOption("export_path", &export_path);
+  options.AddDefaultOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
   options.AddDefaultOption("image_list_path", &image_list_path);
   options.AddMapperOptions();
   options.Parse(argc, argv);
 
-  if (!ExistsDir(export_path)) {
-    std::cerr << "ERROR: `export_path` is not a directory." << std::endl;
+  if (!ExistsDir(output_path)) {
+    std::cerr << "ERROR: `output_path` is not a directory." << std::endl;
     return EXIT_FAILURE;
   }
 
   if (!image_list_path.empty()) {
     const auto image_names = ReadTextFileLines(image_list_path);
     options.mapper->image_names =
-        std::set<std::string>(image_names.begin(), image_names.end());
+        std::unordered_set<std::string>(image_names.begin(), image_names.end());
   }
 
   ReconstructionManager reconstruction_manager;
-  if (import_path != "") {
-    if (!ExistsDir(import_path)) {
-      std::cerr << "ERROR: `import_path` is not a directory." << std::endl;
+  if (input_path != "") {
+    if (!ExistsDir(input_path)) {
+      std::cerr << "ERROR: `input_path` is not a directory." << std::endl;
       return EXIT_FAILURE;
     }
-    reconstruction_manager.Read(import_path);
+    reconstruction_manager.Read(input_path);
   }
 
   IncrementalMapperController mapper(options.mapper.get(), *options.image_path,
@@ -701,14 +1008,14 @@ int RunMapper(int argc, char** argv) {
   // models to as their reconstruction finishes instead of writing all results
   // after all reconstructions finished.
   size_t prev_num_reconstructions = 0;
-  if (import_path == "") {
+  if (input_path == "") {
     mapper.AddCallback(
         IncrementalMapperController::LAST_IMAGE_REG_CALLBACK, [&]() {
           // If the number of reconstructions has not changed, the last model
           // was discarded for some reason.
           if (reconstruction_manager.Size() > prev_num_reconstructions) {
             const std::string reconstruction_path = JoinPaths(
-                export_path, std::to_string(prev_num_reconstructions));
+                output_path, std::to_string(prev_num_reconstructions));
             const auto& reconstruction =
                 reconstruction_manager.Get(prev_num_reconstructions);
             CreateDirIfNotExists(reconstruction_path);
@@ -724,8 +1031,8 @@ int RunMapper(int argc, char** argv) {
 
   // In case the reconstruction is continued from an existing reconstruction, do
   // not create sub-folders but directly write the results.
-  if (import_path != "" && reconstruction_manager.Size() > 0) {
-    reconstruction_manager.Get(0).Write(export_path);
+  if (input_path != "" && reconstruction_manager.Size() > 0) {
+    reconstruction_manager.Get(0).Write(output_path);
   }
 
   return EXIT_SUCCESS;
@@ -734,13 +1041,13 @@ int RunMapper(int argc, char** argv) {
 int RunHierarchicalMapper(int argc, char** argv) {
   HierarchicalMapperController::Options hierarchical_options;
   SceneClustering::Options clustering_options;
-  std::string export_path;
+  std::string output_path;
 
   OptionManager options;
   options.AddRequiredOption("database_path",
                             &hierarchical_options.database_path);
   options.AddRequiredOption("image_path", &hierarchical_options.image_path);
-  options.AddRequiredOption("export_path", &export_path);
+  options.AddRequiredOption("output_path", &output_path);
   options.AddDefaultOption("num_workers", &hierarchical_options.num_workers);
   options.AddDefaultOption("image_overlap", &clustering_options.image_overlap);
   options.AddDefaultOption("leaf_max_num_images",
@@ -748,8 +1055,8 @@ int RunHierarchicalMapper(int argc, char** argv) {
   options.AddMapperOptions();
   options.Parse(argc, argv);
 
-  if (!ExistsDir(export_path)) {
-    std::cerr << "ERROR: `export_path` is not a directory." << std::endl;
+  if (!ExistsDir(output_path)) {
+    std::cerr << "ERROR: `output_path` is not a directory." << std::endl;
     return EXIT_FAILURE;
   }
 
@@ -761,7 +1068,7 @@ int RunHierarchicalMapper(int argc, char** argv) {
   hierarchical_mapper.Start();
   hierarchical_mapper.Wait();
 
-  reconstruction_manager.Write(export_path, &options);
+  reconstruction_manager.Write(output_path, &options);
 
   return EXIT_SUCCESS;
 }
@@ -933,7 +1240,7 @@ int RunModelConverter(int argc, char** argv) {
   options.AddRequiredOption("input_path", &input_path);
   options.AddRequiredOption("output_path", &output_path);
   options.AddRequiredOption("output_type", &output_type,
-                            "{'BIN', 'TXT', 'NVM', 'Bundler', 'VRML', 'PLY'}");
+                            "{BIN, TXT, NVM, Bundler, VRML, PLY}");
   options.Parse(argc, argv);
 
   Reconstruction reconstruction;
@@ -968,7 +1275,7 @@ int RunModelMerger(int argc, char** argv) {
   std::string input_path1;
   std::string input_path2;
   std::string output_path;
-  double max_reproj_error = 8.0;
+  double max_reproj_error = 64.0;
 
   OptionManager options;
   options.AddRequiredOption("input_path1", &input_path1);
@@ -1101,51 +1408,102 @@ int RunSequentialMatcher(int argc, char** argv) {
   return EXIT_SUCCESS;
 }
 
+int RunPointFiltering(int argc, char** argv) {
+  std::string input_path;
+  std::string output_path;
+
+  size_t min_track_len = 2;
+  double max_reproj_error = 4.0;
+  double min_tri_angle = 1.5;
+
+  OptionManager options;
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption("min_track_len", &min_track_len);
+  options.AddDefaultOption("max_reproj_error", &max_reproj_error);
+  options.AddDefaultOption("min_tri_angle", &min_tri_angle);
+  options.Parse(argc, argv);
+
+  Reconstruction reconstruction;
+  reconstruction.Read(input_path);
+
+  size_t num_filtered =
+      reconstruction.FilterAllPoints3D(max_reproj_error, min_tri_angle);
+
+  for (const auto point3D_id : reconstruction.Point3DIds()) {
+    const auto& point3D = reconstruction.Point3D(point3D_id);
+    if (point3D.Track().Length() < min_track_len) {
+      num_filtered += point3D.Track().Length();
+      reconstruction.DeletePoint3D(point3D_id);
+    }
+  }
+
+  std::cout << "Filtered observations: " << num_filtered << std::endl;
+
+  reconstruction.Write(output_path);
+
+  return EXIT_SUCCESS;
+}
+
 int RunPointTriangulator(int argc, char** argv) {
-  std::string import_path;
-  std::string export_path;
+  std::string input_path;
+  std::string output_path;
+  bool clear_points = false;
 
   OptionManager options;
   options.AddDatabaseOptions();
   options.AddImageOptions();
-  options.AddRequiredOption("import_path", &import_path);
-  options.AddRequiredOption("export_path", &export_path);
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddRequiredOption("output_path", &output_path);
+  options.AddDefaultOption(
+      "clear_points", &clear_points,
+      "Whether to clear all existing points and observations");
   options.AddMapperOptions();
   options.Parse(argc, argv);
 
-  if (!ExistsDir(import_path)) {
-    std::cerr << "ERROR: `import_path` is not a directory" << std::endl;
+  if (!ExistsDir(input_path)) {
+    std::cerr << "ERROR: `input_path` is not a directory" << std::endl;
     return EXIT_FAILURE;
   }
 
-  if (!ExistsDir(export_path)) {
-    std::cerr << "ERROR: `export_path` is not a directory" << std::endl;
+  if (!ExistsDir(output_path)) {
+    std::cerr << "ERROR: `output_path` is not a directory" << std::endl;
     return EXIT_FAILURE;
   }
 
   const auto& mapper_options = *options.mapper;
+
+  PrintHeading1("Loading model");
+
+  Reconstruction reconstruction;
+  reconstruction.Read(input_path);
 
   PrintHeading1("Loading database");
 
   DatabaseCache database_cache;
 
   {
-    Database database(*options.database_path);
     Timer timer;
     timer.Start();
+
+    Database database(*options.database_path);
+
     const size_t min_num_matches =
         static_cast<size_t>(mapper_options.min_num_matches);
     database_cache.Load(database, min_num_matches,
                         mapper_options.ignore_watermarks,
                         mapper_options.image_names);
+
+    if (clear_points) {
+      reconstruction.DeleteAllPoints2DAndPoints3D();
+      reconstruction.TranscribeImageIdsToDatabase(database);
+    }
+
     std::cout << std::endl;
     timer.PrintMinutes();
   }
 
   std::cout << std::endl;
-
-  Reconstruction reconstruction;
-  reconstruction.Read(import_path);
 
   CHECK_GE(reconstruction.NumRegImages(), 2)
       << "Need at least two images for triangulation";
@@ -1159,14 +1517,18 @@ int RunPointTriangulator(int argc, char** argv) {
 
   const auto tri_options = mapper_options.Triangulation();
 
-  for (const image_t image_id : reconstruction.RegImageIds()) {
+  const auto& reg_image_ids = reconstruction.RegImageIds();
+
+  for (size_t i = 0; i < reg_image_ids.size(); ++i) {
+    const image_t image_id = reg_image_ids[i];
+
     const auto& image = reconstruction.Image(image_id);
 
-    PrintHeading1("Triangulating image #" + std::to_string(image_id));
+    PrintHeading1(StringPrintf("Triangulating image #%d (%d)", image_id, i));
 
     const size_t num_existing_points3D = image.NumPoints3D();
 
-    std::cout << "  => Image has " << num_existing_points3D << " / "
+    std::cout << "  => Image sees " << num_existing_points3D << " / "
               << image.NumObservations() << " points" << std::endl;
 
     mapper.TriangulateImage(tri_options, image_id);
@@ -1177,19 +1539,27 @@ int RunPointTriangulator(int argc, char** argv) {
   }
 
   //////////////////////////////////////////////////////////////////////////////
-  // Bundle adjustment
+  // Retriangulation
   //////////////////////////////////////////////////////////////////////////////
+
+  PrintHeading1("Retriangulation");
 
   CompleteAndMergeTracks(mapper_options, &mapper);
 
-  const auto ba_options = mapper_options.GlobalBundleAdjustment();
+  //////////////////////////////////////////////////////////////////////////////
+  // Bundle adjustment
+  //////////////////////////////////////////////////////////////////////////////
+
+  auto ba_options = mapper_options.GlobalBundleAdjustment();
+  ba_options.refine_focal_length = false;
+  ba_options.refine_principal_point = false;
+  ba_options.refine_extra_params = false;
+  ba_options.refine_extrinsics = false;
 
   // Configure bundle adjustment.
   BundleAdjustmentConfig ba_config;
   for (const image_t image_id : reconstruction.RegImageIds()) {
     ba_config.AddImage(image_id);
-    ba_config.SetConstantPose(image_id);
-    ba_config.SetConstantCamera(reconstruction.Image(image_id).CameraId());
   }
 
   for (int i = 0; i < mapper_options.ba_global_max_refinements; ++i) {
@@ -1220,7 +1590,7 @@ int RunPointTriangulator(int argc, char** argv) {
   const bool kDiscardReconstruction = false;
   mapper.EndReconstruction(kDiscardReconstruction);
 
-  reconstruction.Write(export_path);
+  reconstruction.Write(output_path);
 
   return EXIT_SUCCESS;
 }
@@ -1314,9 +1684,9 @@ std::vector<CameraRig> ReadCameraRigConfig(
     for (const auto image_id : reconstruction.RegImageIds()) {
       const auto& image = reconstruction.Image(image_id);
       for (const auto& image_prefix : image_prefixes) {
-        if (StringStartsWith(image.Name(), image_prefix)) {
+        if (StringContains(image.Name(), image_prefix)) {
           const std::string image_suffix =
-              StringReplace(image.Name(), image_prefix, "");
+              StringGetAfter(image.Name(), image_prefix);
           snapshots[image_suffix].push_back(image_id);
         }
       }
@@ -1350,10 +1720,14 @@ int RunRigBundleAdjuster(int argc, char** argv) {
   std::string output_path;
   std::string rig_config_path;
 
+  RigBundleAdjuster::Options rig_ba_options;
+
   OptionManager options;
   options.AddRequiredOption("input_path", &input_path);
   options.AddRequiredOption("output_path", &output_path);
   options.AddRequiredOption("rig_config_path", &rig_config_path);
+  options.AddDefaultOption("RigBundleAdjustment.refine_relative_poses",
+                           &rig_ba_options.refine_relative_poses);
   options.AddBundleAdjustmentOptions();
   options.Parse(argc, argv);
 
@@ -1383,7 +1757,6 @@ int RunRigBundleAdjuster(int argc, char** argv) {
 
   BundleAdjustmentOptions ba_options = *options.bundle_adjustment;
   ba_options.solver_options.minimizer_progress_to_stdout = true;
-  RigBundleAdjuster::Options rig_ba_options;
   RigBundleAdjuster bundle_adjuster(ba_options, rig_ba_options, config);
   CHECK(bundle_adjuster.Solve(&reconstruction, &camera_rigs));
 
@@ -1559,6 +1932,7 @@ std::vector<Image> ReadVocabTreeRetrievalImageList(const std::string& path,
     }
   } else {
     DatabaseTransaction database_transaction(database);
+
     const auto image_names = ReadTextFileLines(path);
     images.reserve(image_names.size());
     for (const auto& image_name : image_names) {
@@ -1719,7 +2093,7 @@ int ShowHelp(
   std::cout << "  colmap exhaustive_matcher --database_path DATABASE"
             << std::endl;
   std::cout << "  colmap mapper --image_path IMAGES --database_path DATABASE "
-               "--export_path EXPORT"
+               "--output_path MODEL"
             << std::endl;
   std::cout << "  ..." << std::endl << std::endl;
 
@@ -1742,14 +2116,19 @@ int main(int argc, char** argv) {
   commands.emplace_back("bundle_adjuster", &RunBundleAdjuster);
   commands.emplace_back("color_extractor", &RunColorExtractor);
   commands.emplace_back("database_creator", &RunDatabaseCreator);
+  commands.emplace_back("database_merger", &RunDatabaseMerger);
   commands.emplace_back("delaunay_mesher", &RunDelaunayMesher);
   commands.emplace_back("exhaustive_matcher", &RunExhaustiveMatcher);
   commands.emplace_back("feature_extractor", &RunFeatureExtractor);
   commands.emplace_back("feature_importer", &RunFeatureImporter);
   commands.emplace_back("hierarchical_mapper", &RunHierarchicalMapper);
+  commands.emplace_back("image_deleter", &RunImageDeleter);
+  commands.emplace_back("image_filterer", &RunImageFilterer);
   commands.emplace_back("image_rectifier", &RunImageRectifier);
   commands.emplace_back("image_registrator", &RunImageRegistrator);
   commands.emplace_back("image_undistorter", &RunImageUndistorter);
+  commands.emplace_back("image_undistorter_standalone",
+                        &RunImageUndistorterStandalone);
   commands.emplace_back("mapper", &RunMapper);
   commands.emplace_back("matches_importer", &RunMatchesImporter);
   commands.emplace_back("model_aligner", &RunModelAligner);
@@ -1759,8 +2138,10 @@ int main(int argc, char** argv) {
   commands.emplace_back("model_orientation_aligner",
                         &RunModelOrientationAligner);
   commands.emplace_back("patch_match_stereo", &RunPatchMatchStereo);
+  commands.emplace_back("point_filtering", &RunPointFiltering);
   commands.emplace_back("point_triangulator", &RunPointTriangulator);
   commands.emplace_back("poisson_mesher", &RunPoissonMesher);
+  commands.emplace_back("project_generator", &RunProjectGenerator);
   commands.emplace_back("rig_bundle_adjuster", &RunRigBundleAdjuster);
   commands.emplace_back("sequential_matcher", &RunSequentialMatcher);
   commands.emplace_back("spatial_matcher", &RunSpatialMatcher);

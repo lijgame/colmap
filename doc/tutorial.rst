@@ -7,7 +7,8 @@ This tutorial covers the topic of image-based 3D reconstruction by demonstrating
 the individual processing steps in COLMAP. If you are interested in a more
 general and mathematical introduction to the topic of image-based 3D
 reconstruction, please also refer to the `CVPR 2017 Tutorial on Large-scale 3D
-Modeling from Crowdsourced Data <https://demuc.de/tutorials/cvpr2017/>`_.
+Modeling from Crowdsourced Data <https://demuc.de/tutorials/cvpr2017/>`_ and
+[schoenberger_thesis]_.
 
 Image-based 3D reconstruction from images traditionally first recovers a sparse
 representation of the scene and the camera poses of the input images using
@@ -293,9 +294,9 @@ matching modes, that are intended for different input scenarios:
   vocabulary tree, where every N-th image (`loop_detection_period`) is matched
   against its visually most similar images (`loop_detection_num_images`). Note
   that image file names must be ordered sequentially (e.g., `image0001.jpg`,
-  `image0002.jpg`, etc.). You can verify the correct order in the database
-  management tool (see :ref:`Database Format <database-format>`). Note that
-  loop detection requires a pre-trained vocabulary tree, that can be downloaded
+  `image0002.jpg`, etc.). The order in the database is not relevant, since the
+  images are explicitly ordered according to their file names. Note that loop
+  detection requires a pre-trained vocabulary tree, that can be downloaded
   from https://demuc.de/colmap/.
 
 - **Vocabulary Tree Matching**: In this matching mode [schoenberger16vote]_,

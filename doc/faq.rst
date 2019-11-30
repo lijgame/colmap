@@ -1,6 +1,21 @@
 Frequently Asked Questions
 ==========================
 
+Adjusting the options for different reconstruction scenarios and output quality
+-------------------------------------------------------------------------------
+
+COLMAP provides many options that can be tuned for different reconstruction
+scenarios and to trade off accuracy and completeness versus efficiency. The
+default options are set to for medium to high quality reconstruction of
+unstructured input data. There are several presets for different scenarios and
+quality levels, which can be set in the GUI as ``Extras > Set options for ...``.
+To use these presets from the command-line, you can save the current set of
+options as ``File > Save project`` after choosing the presets. The resulting
+project file can be opened with a text editor to view the different options.
+Alternatively, you can generate the project file also from the command-line
+by running ``colmap project_generator``.
+
+
 Extending COLMAP
 ----------------
 
@@ -83,17 +98,42 @@ Reconstruct sparse/dense model from known camera poses
 ------------------------------------------------------
 
 If the camera poses are known and you want to reconstruct a sparse or dense
-model of the scene, you must first manually construct a sparse model by
-creating a ``cameras.txt`` and ``images.txt`` file. The ``points3D.txt`` file
-can be empty and you can refer to :ref:`this article <output-format>` for more
-information about the structure of a sparse model.
+model of the scene, you must first manually construct a sparse model by creating
+a ``cameras.txt``, ``points3D.txt``, and ``images.txt`` under a new folder::
 
-To reconstruct a sparse model, you would have to recompute features from the
+    +── path/to/manually/created/sparse/model
+    │   +── cameras.txt
+    │   +── images.txt
+    │   +── points3D.txt
+
+The ``points3D.txt`` file should be empty while every other line in the ``images.txt``
+should also be empty, since the sparse features are computed, as described below. You can
+refer to :ref:`this article <output-format>` for more information about the structure of
+a sparse model.
+
+Example of images.txt::
+
+    1 0.695104 0.718385 -0.024566 0.012285 -0.046895 0.005253 -0.199664 1 image0001.png
+    # Make sure every other line is left empty
+    2 0.696445 0.717090 -0.023185 0.014441 -0.041213 0.001928 -0.134851 2 image0002.png
+
+    3 0.697457 0.715925 -0.025383 0.018967 -0.054056 0.008579 -0.378221 1 image0003.png
+
+    4 0.698777 0.714625 -0.023996 0.021129 -0.048184 0.004529 -0.313427 2 image0004.png
+
+To reconstruct a sparse map, you first have to recompute features from the
 images of the known camera poses as follows::
 
     colmap feature_extractor \
         --database_path $PROJECT_PATH/database.db \
         --image_path $PROJECT_PATH/images
+
+If your known camera intrinsics have large distortion coefficients, you should
+now manually copy the parameters from your ``cameras.txt`` to the database, such
+that the matcher can leverage the intrinsics. Modifying the database is possible
+in many ways, but an easy option is to use the provided
+``scripts/python/database.py`` script. Otherwise, you can skip this step and
+simply continue as follows::
 
     colmap exhaustive_matcher \ # or alternatively any other matcher
         --database_path $PROJECT_PATH/database.db
@@ -101,8 +141,8 @@ images of the known camera poses as follows::
     colmap point_triangulator \
         --database_path $PROJECT_PATH/database.db \
         --image_path $PROJECT_PATH/images
-        --import_path path/to/manually/created/sparse/model \
-        --export_path path/to/triangulated/sparse/model
+        --input_path path/to/manually/created/sparse/model \
+        --output_path path/to/triangulated/sparse/model
 
 Note that the sparse reconstruction step is not necessary in order to compute
 a dense model from known camera poses. Assuming you computed a sparse model
@@ -134,8 +174,8 @@ now also requires a manual specification of the depth range::
 
     colmap patch_match_stereo \
         --workspace_path path/to/dense/workspace \
-        --DenseStereo.depth_min $MIN_DEPTH \
-        --DenseStereo.depth_max $MAX_DEPTH
+        --PatchMatchStereo.depth_min $MIN_DEPTH \
+        --PatchMatchStereo.depth_max $MAX_DEPTH
 
     colmap stereo_fusion \
         --workspace_path path/to/dense/workspace \
@@ -199,6 +239,18 @@ vanishing point detection in the images. Please, refer to the
 ``model_orientation_aligner`` for more details.
 
 
+Mask image regions
+------------------
+
+COLMAP supports masking of keypoints during feature extraction by passing a
+``mask_path`` to a folder with image masks. For a given image, the corresponding
+mask must have the same sub-path below this root as the image has below
+``image_path``. The filename must be equal, aside from the added extension
+``.png``. For example, for an image ``image_path/abc/012.jpg``, the mask would
+be ``mask_path/abc/012.jpg.png``. No features will be extracted in regions,
+where the mask image is black (pixel intensity value 0 in grayscale).
+
+
 Register/localize new images into an existing reconstruction
 ------------------------------------------------------------
 
@@ -217,9 +269,8 @@ new images within this reconstruction, you can follow these steps::
 
     colmap image_registrator \
         --database_path $PROJECT_PATH/database.db \
-        --image_path $PROJECT_PATH/images \
-        --import_path /path/to/existing-model \
-        --export_path /path/to/model-with-new-images
+        --input_path /path/to/existing-model \
+        --output_path /path/to/model-with-new-images
 
     colmap bundle_adjuster \
         --input_path /path/to/model-with-new-images \
@@ -239,15 +290,15 @@ reconstruction process from the existing model::
     colmap mapper \
         --database_path $PROJECT_PATH/database.db \
         --image_path $PROJECT_PATH/images \
-        --import_path /path/to/existing-model \
-        --export_path /path/to/model-with-new-images
+        --input_path /path/to/existing-model \
+        --output_path /path/to/model-with-new-images
 
 Or, alternatively, you can start the reconstruction from scratch::
 
     colmap mapper \
         --database_path $PROJECT_PATH/database.db \
         --image_path $PROJECT_PATH/images \
-        --export_path /path/to/model-with-new-images
+        --output_path /path/to/model-with-new-images
 
 Note that dense reconstruction must be re-run from scratch after running the
 ``mapper`` or the ``bundle_adjuster``, as the coordinate frame of the model can
@@ -297,30 +348,42 @@ during feature matching, your GPU runs out of memory. Try decreasing the option
 might lead to inferior feature matching results, since the lower-scale input
 features will be clamped in order to fit them into GPU memory. Alternatively,
 you could change to CPU-based feature matching, but this can become very slow,
-or you use a GPU with more memory.
+or better you buy a GPU with more memory.
+
+The maximum required GPU memory can be approximately estimated using the
+following formula: ``4 * num_matches * num_matches + 4 * num_matches * 256``.
+For example, if you set ``--SiftMatching.max_num_matches 10000``, the maximum
+required GPU memory will be around 400MB, which are only allocated if one of
+your images actually has that many features.
 
 
 Trading off completeness and accuracy in dense reconstruction
 -------------------------------------------------------------
 
 If the dense point cloud contains too many outliers and too much noise, try to
-increase the value of option ``--DenseFusion.min_num_pixels``.
+increase the value of option ``--StereoFusion.min_num_pixels``.
 
 If the reconstructed dense surface mesh model using Poisson reconstruction
 contains no surface or there are too many outlier surfaces, you should reduce
-the value of option ``--DenseMeshing.trim`` to decrease the surface are and vice
-versa to increase it. Also consider to try the reduce the outliers or increase
-the completeness in the fusion stage, as described above.
+the value of option ``--PoissonMeshing.trim`` to decrease the surface are and
+vice versa to increase it. Also consider to try the reduce the outliers or
+increase the completeness in the fusion stage, as described above.
+
+If the reconstructed dense surface mesh model using Delaunay reconstruction
+contains too noisy or incomplete surfaces, you should increase the
+``--DenaunayMeshing.quality_regularization`` parameter to obtain a smoother
+surface. If the resolution of the mesh is too coarse, you should reduce the
+``--DelaunayMeshing.max_proj_dist`` option to a lower value.
 
 
 Improving dense reconstruction results for weakly textured surfaces
 -------------------------------------------------------------------
 
 For scenes with weakly textured surfaces it can help to have a high resolution
-of the input images (``--DenseStereo.max_image_size``) and a large patch window
-radius (``--DenseStereo.window_radius``). You may also want to reduce the
+of the input images (``--PatchMatchStereo.max_image_size``) and a large patch window
+radius (``--PatchMatchStereo.window_radius``). You may also want to reduce the
 filtering threshold for the photometric consistency cost
-(``--DenseStereo.filter_min_ncc``).
+(``--PatchMatchStereo.filter_min_ncc``).
 
 
 Surface mesh reconstruction
@@ -329,12 +392,14 @@ Surface mesh reconstruction
 COLMAP supports two types of surface reconstruction algorithms. Poisson surface
 reconstruction [kazhdan2013]_ and graph-cut based surface extraction from a
 Delaunay triangulation. Poisson surface reconstruction typically requires an
-outlier-free input point cloud and it often produces bad surfaces in the
+almost outlier-free input point cloud and it often produces bad surfaces in the
 presence of outliers or large holes in the input data. The Delaunay
-triangulation based meshing algorithm is robust to outliers and in general more
-scalable to large datasets than the Poisson algorithm, but it usually produces
-less smooth surfaces. Furthermore, the Delaunay based meshing can be applied to
-sparse and dense reconstruction results.
+triangulation based meshing algorithm is more robust to outliers and in general
+more scalable to large datasets than the Poisson algorithm, but it usually
+produces less smooth surfaces. Furthermore, the Delaunay based meshing can be
+applied to sparse and dense reconstruction results. To increase the smoothness
+of the surface as a post-processing step, you could use Laplacian smoothing, as
+e.g. implemented in Meshlab.
 
 Note that the two algorithms can also be combined by first running the Delaunay
 meshing to robustly filter outliers from the sparse or dense point cloud and
@@ -349,27 +414,27 @@ The dense reconstruction can be speeded up in multiple ways:
 
 - Put more GPUs in your system as the dense reconstruction can make use of
   multiple GPUs during the stereo reconstruction step. Put more RAM into your
-  system and increase the ``--DenseStereo.cache_size``,
-  ``--DenseFusion.cache_size`` to the largest possible value in order to
+  system and increase the ``--PatchMatchStereo.cache_size``,
+  ``--StereoFusion.cache_size`` to the largest possible value in order to
   speed up the dense fusion step.
 
 - Do not perform geometric dense stereo reconstruction
-  ``--DenseStereo.geom_consistency false``. Make sure to also enable
-  ``--DenseStereo.filter true`` in this case.
+  ``--PatchMatchStereo.geom_consistency false``. Make sure to also enable
+  ``--PatchMatchStereo.filter true`` in this case.
 
-- Reduce the ``--DenseStereo.max_image_size``, ``--DenseFusion.max_image_size``
+- Reduce the ``--PatchMatchStereo.max_image_size``, ``--StereoFusion.max_image_size``
   values to perform dense reconstruction on a maximum image resolution.
 
 - Reduce the number of source images per reference image to be considered, as
   described :ref:`here <faq-dense-memory>`.
 
-- Increase the patch windows step ``--DenseStereo.window_step`` to 2.
+- Increase the patch windows step ``--PatchMatchStereo.window_step`` to 2.
 
-- Reduce the patch window radius ``--DenseStereo.window_radius``.
+- Reduce the patch window radius ``--PatchMatchStereo.window_radius``.
 
-- Reduce the number of patch match iterations ``--DenseStereo.num_iterations``.
+- Reduce the number of patch match iterations ``--PatchMatchStereo.num_iterations``.
 
-- Reduce the number of sampled views ``--DenseStereo.num_samples``.
+- Reduce the number of sampled views ``--PatchMatchStereo.num_samples``.
 
 - To speedup the dense stereo and fusion step for very large reconstructions,
   you can use CMVS to partition your scene into multiple clusters and to prune
@@ -387,15 +452,15 @@ Reduce memory usage during dense reconstruction
 -----------------------------------------------
 
 If you run out of GPU memory during patch match stereo, you can either reduce
-the maximum image size by setting the option ``--DenseStereo.max_image_size`` or
+the maximum image size by setting the option ``--PatchMatchStereo.max_image_size`` or
 reduce the number of source images in the ``stereo/patch-match.cfg`` file from
 e.g. ``__auto__, 30`` to ``__auto__, 10``. Note that enabling the
 ``geom_consistency`` option increases the required GPU memory.
 
 If you run out of CPU memory during stereo or fusion, you can reduce the
-``--DenseStereo.cache_size`` or ``--DenseFusion.cache_size`` specified in
-gigabytes or you can reduce ``--DenseStereo.max_image_size`` or
-``--DenseFusion.max_image_size``. Note that a too low value might lead to very
+``--PatchMatchStereo.cache_size`` or ``--StereoFusion.cache_size`` specified in
+gigabytes or you can reduce ``--PatchMatchStereo.max_image_size`` or
+``--StereoFusion.max_image_size``. Note that a too low value might lead to very
 slow processing and heavy load on the hard disk.
 
 For large-scale reconstructions of several thousands of images, you should
@@ -404,13 +469,15 @@ images using e.g. CMVS [furukawa10]_. In addition, CMVS allows to prune
 redundant images observing the same scene elements. Note that, for this use
 case, COLMAP's dense reconstruction pipeline also supports the PMVS/CMVS folder
 structure when executed from the command-line. Please, refer to the workspace
-folder for example shell scripts. Since CMVS produces highly overlapping
-clusters, it is recommended to increase the default value of 100 images per
-cluster to as high as possible according to your available system resources and
-speed requirements. To change the number of images using CMVS, you must modify
-the shell scripts accordingly. For example, ``cmvs pmvs/ 500`` to limit each
-cluster to 500 images. If you want to use CMVS to prune redundant images but not
-to cluster the scene, you can simply set this number to a very large value.
+folder for example shell scripts. Note that the example shell scripts for
+PMVS/CMVS are only generated, if the output type is set to PMVS. Since CMVS
+produces highly overlapping clusters, it is recommended to increase the default
+value of 100 images per cluster to as high as possible according to your
+available system resources and speed requirements. To change the number of
+images using CMVS, you must modify the shell scripts accordingly. For example,
+``cmvs pmvs/ 500`` to limit each cluster to 500 images. If you want to use CMVS
+to prune redundant images but not to cluster the scene, you can simply set this
+number to a very large value.
 
 
 .. _faq-dense-manual-source:
@@ -439,10 +506,10 @@ Multi-GPU support in dense reconstruction
 -----------------------------------------
 
 You can run dense reconstruction on multiple GPUs by specifying multiple indices
-for CUDA-enabled GPUs, e.g., ``--DenseStereo.gpu_index=0,1,2,3`` runs the dense
+for CUDA-enabled GPUs, e.g., ``--PatchMatchStereo.gpu_index=0,1,2,3`` runs the dense
 reconstruction on 4 GPUs in parallel. You can also run multiple dense
 reconstruction threads on the same GPU by specifying the same GPU index twice,
-e.g., ``--DenseStereo.gpu_index=0,0,1,1,2,3``. By default, COLMAP runs one
+e.g., ``--PatchMatchStereo.gpu_index=0,0,1,1,2,3``. By default, COLMAP runs one
 dense reconstruction thread per CUDA-enabled GPU.
 
 
