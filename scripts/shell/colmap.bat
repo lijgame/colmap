@@ -33,7 +33,7 @@ rem Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
 set SCRIPT_PATH=%~dp0
 
-set PATH=%SCRIPT_PATH%\lib;%PATH%
+set PATH=%SCRIPT_PATH%\lib;%PATH%;c:\codes\vcpkg\installed\x64-windows\bin
 set QT_PLUGIN_PATH=%SCRIPT_PATH%\lib;%QT_PLUGIN_PATH%
 
 set COMMAND=%1

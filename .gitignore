@@ -40,3 +40,6 @@ x64-windows/
 *.exe
 *.out
 *.app
+
+out/
+.vs/
