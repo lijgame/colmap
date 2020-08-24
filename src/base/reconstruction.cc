@@ -554,7 +554,10 @@ bool Reconstruction::Align(const std::vector<std::string>& image_names,
   }
 
   SimilarityTransform3 tform;
-  tform.Estimate(src, dst);
+  if (!tform.Estimate(src, dst)) {
+    return false;
+  }
+
   Transform(tform);
 
   return true;
@@ -858,6 +861,16 @@ void Reconstruction::ImportPLY(const std::string& path) {
 
   points3D_.reserve(ply_points.size());
 
+  for (const auto& ply_point : ply_points) {
+    AddPoint3D(Eigen::Vector3d(ply_point.x, ply_point.y, ply_point.z), Track(),
+               Eigen::Vector3ub(ply_point.r, ply_point.g, ply_point.b));
+  }
+}
+
+void Reconstruction::ImportPLY(const std::vector<PlyPoint> &ply_points)
+{
+  points3D_.clear();
+  points3D_.reserve(ply_points.size());
   for (const auto& ply_point : ply_points) {
     AddPoint3D(Eigen::Vector3d(ply_point.x, ply_point.y, ply_point.z), Track(),
                Eigen::Vector3ub(ply_point.r, ply_point.g, ply_point.b));
