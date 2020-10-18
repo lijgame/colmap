@@ -6,6 +6,10 @@ if(POLICY CMP0054)
     cmake_policy(SET CMP0054 NEW)
 endif()
 
+if(POLICY CMP0072)
+  cmake_policy(SET CMP0072 OLD)
+endif()
+
 # Determine project compiler.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(IS_MSVC TRUE)
