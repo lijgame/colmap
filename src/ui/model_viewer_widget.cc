@@ -218,7 +218,7 @@ void ModelViewerWidget::initializeGL() {
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+  // glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
   SetupPainters();
   SetupView();
 }
@@ -456,7 +456,7 @@ void ModelViewerWidget::SelectObject(const int x, const int y) {
   makeCurrent();
 
   // Ensure that anti-aliasing does not change the colors of objects.
-  glDisable(GL_MULTISAMPLE);
+  // glDisable(GL_MULTISAMPLE);
 
   glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -511,7 +511,7 @@ void ModelViewerWidget::SelectObject(const int x, const int y) {
   }
 
   // Re-enable, since temporarily disabled above.
-  glEnable(GL_MULTISAMPLE);
+  // glEnable(GL_MULTISAMPLE);
 
   selection_buffer_.clear();
 
