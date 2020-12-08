@@ -1,0 +1,1 @@
+/home/lijiang/app/run_colmap.sh
