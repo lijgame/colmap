@@ -37,6 +37,8 @@
 #include "estimators/similarity_transform.h"
 #include "optim/loransac.h"
 
+#include <fstream>
+
 namespace colmap {
 namespace {
 
@@ -173,10 +175,9 @@ struct ReconstructionAlignmentEstimator {
 
 }  // namespace
 
-SimilarityTransform3::SimilarityTransform3() {
-  SimilarityTransform3(1, ComposeIdentityQuaternion(),
-                       Eigen::Vector3d(0, 0, 0));
-}
+SimilarityTransform3::SimilarityTransform3()
+    : SimilarityTransform3(1, ComposeIdentityQuaternion(),
+                           Eigen::Vector3d(0, 0, 0)) {}
 
 SimilarityTransform3::SimilarityTransform3(const Eigen::Matrix3x4d& matrix) {
   transform_.matrix().topLeftCorner<3, 4>() = matrix;
@@ -195,17 +196,12 @@ SimilarityTransform3::SimilarityTransform3(const double scale,
   transform_.matrix() = matrix;
 }
 
-bool SimilarityTransform3::Estimate(const std::vector<Eigen::Vector3d>& src,
-                                    const std::vector<Eigen::Vector3d>& dst) {
-  const auto results = SimilarityTransformEstimator<3>().Estimate(src, dst);
-  if (results.empty()) {
-    return false;
-  }
-
-  CHECK_EQ(results.size(), 1);
-  transform_.matrix().topLeftCorner<3, 4>() = results[0];
-
-  return true;
+void SimilarityTransform3::Write(const std::string& path) {
+  std::ofstream file(path, std::ios::trunc);
+  CHECK(file.is_open()) << path;
+  // Ensure that we don't loose any precision by storing in text.
+  file.precision(17);
+  file << transform_.matrix() << std::endl;
 }
 
 SimilarityTransform3 SimilarityTransform3::Inverse() const {
